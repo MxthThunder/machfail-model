@@ -1,6 +1,6 @@
-﻿/**
+/**
  * AI Predictive Maintenance Microservice Client
- * Connects to the FastAPI backend at http://127.0.0.1:8000
+ * Connects Person 2 (Web Dashboard) to Person 3 (FastAPI AI Backend) at http://127.0.0.1:8000
  */
 
 export interface SensorReading {
@@ -30,6 +30,13 @@ export interface ModelInfoResponse {
   features: string[];
 }
 
+export interface HealthCheckResponse {
+  status: string;
+  version: string;
+  model_loaded: boolean;
+  timestamp: string;
+}
+
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
 export async function fetchPrediction(reading: SensorReading): Promise<PredictionResponse> {
@@ -51,6 +58,16 @@ export async function fetchPrediction(reading: SensorReading): Promise<Predictio
 export async function fetchModelInfo(): Promise<ModelInfoResponse | null> {
   try {
     const response = await fetch(`${API_BASE_URL}/model-info`);
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchSystemHealth(): Promise<HealthCheckResponse | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/health`);
     if (!response.ok) return null;
     return response.json();
   } catch {

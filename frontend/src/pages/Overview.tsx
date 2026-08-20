@@ -1,10 +1,13 @@
+﻿import { useState, useEffect } from 'react';
+import { fetchPrediction } from '../services/api';
+
 const MACHINES = [
   {
     id: 'MOTOR-01',
     type: 'Conveyor Motor',
     img: 'https://images.unsplash.com/photo-1692719094491-2746e82a8595?w=400&h=240&fit=crop&auto=format',
     online: true,
-    health: 92,
+    health: 96,
     rpm: 1450,
     unit: '#A14',
   },
@@ -55,13 +58,6 @@ const MACHINES = [
   },
 ];
 
-const SUMMARY = [
-  { label: 'Total Machines', value: 6, color: 'var(--accent-blue)' },
-  { label: 'Online', value: 1, color: 'var(--status-online)' },
-  { label: 'Offline', value: 5, color: 'var(--status-offline)' },
-  { label: 'Active Alerts', value: 0, color: 'var(--text-muted)' },
-];
-
 export default function Overview({
   motorRunning,
   onViewMachine,
@@ -69,10 +65,39 @@ export default function Overview({
   motorRunning: boolean;
   onViewMachine: () => void;
 }) {
+  const [m1Health, setM1Health] = useState<number>(96);
+  const [m1Status, setM1Status] = useState<string>('NORMAL');
+
+  // Fetch live AI prediction from Person 3 backend
+  useEffect(() => {
+    if (!motorRunning) return;
+    fetchPrediction({
+      rpm: 1450,
+      temperature: 36.5,
+      humidity: 58.0,
+      current: 0.74,
+      vibration: 0.08,
+    })
+      .then(res => {
+        setM1Health(res.health_score);
+        setM1Status(res.status);
+      })
+      .catch(() => {
+        // Fallback default
+      });
+  }, [motorRunning]);
+
+  const SUMMARY = [
+    { label: 'Total Machines', value: 6, color: 'var(--accent-blue)' },
+    { label: 'Online', value: motorRunning ? 1 : 0, color: 'var(--status-online)' },
+    { label: 'Offline', value: motorRunning ? 5 : 6, color: 'var(--status-offline)' },
+    { label: 'Active Alerts', value: m1Status === 'NORMAL' ? 0 : 1, color: m1Status === 'NORMAL' ? 'var(--text-muted)' : 'var(--status-warning)' },
+  ];
+
   return (
     <div className="p-6 space-y-6">
       {/* Summary row */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {SUMMARY.map(({ label, value, color }) => (
           <div
             key={label}
@@ -95,7 +120,7 @@ export default function Overview({
           Machine Fleet
         </h2>
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          6 units registered
+          6 units registered (AI Condition Monitoring Active)
         </span>
       </div>
 
@@ -104,10 +129,14 @@ export default function Overview({
         {MACHINES.map((m) => {
           const isM1 = m.id === 'MOTOR-01';
           const isOnline = isM1 ? motorRunning : false;
+          const displayMachine = isM1
+            ? { ...m, health: isOnline ? m1Health : null }
+            : m;
+
           return (
             <MachineCard
               key={m.id}
-              machine={m}
+              machine={displayMachine}
               isOnline={isOnline}
               onView={isM1 ? onViewMachine : undefined}
             />
@@ -177,15 +206,18 @@ function MachineCard({
           <div className="space-y-2">
             {/* Health bar */}
             <div className="flex items-center justify-between text-[11px]">
-              <span style={{ color: 'var(--text-muted)' }}>Health</span>
-              <span className="font-mono-data font-semibold" style={{ color: 'var(--status-online)' }}>
+              <span style={{ color: 'var(--text-muted)' }}>AI Health Score</span>
+              <span className="font-mono-data font-semibold" style={{ color: machine.health >= 90 ? 'var(--status-online)' : machine.health >= 70 ? 'var(--status-warning)' : 'var(--status-critical)' }}>
                 {machine.health}%
               </span>
             </div>
             <div className="h-1.5 rounded-full" style={{ background: 'var(--border-mid)' }}>
               <div
                 className="h-full rounded-full"
-                style={{ width: `${machine.health}%`, background: 'var(--status-online)' }}
+                style={{
+                  width: `${machine.health}%`,
+                  background: machine.health >= 90 ? 'var(--status-online)' : machine.health >= 70 ? 'var(--status-warning)' : 'var(--status-critical)',
+                }}
               />
             </div>
 
@@ -209,7 +241,7 @@ function MachineCard({
         {/* Button */}
         <button
           onClick={onView}
-          className="mt-auto w-full py-2 rounded text-xs font-semibold transition-fast"
+          className="mt-auto w-full py-2 rounded text-xs font-semibold transition-fast cursor-pointer"
           style={
             isOnline
               ? {
