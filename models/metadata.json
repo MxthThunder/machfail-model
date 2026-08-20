@@ -1,0 +1,52 @@
+{
+    "model_name": "RandomForestClassifier",
+    "model_version": "1.0.0",
+    "training_date": "2026-08-20T10:20:36.167704",
+    "dataset_type": "synthetic",
+    "data_source_note": "Trained on synthetic development telemetry. Retrain before production on real machine data.",
+    "feature_names": [
+        "rpm",
+        "temperature",
+        "humidity",
+        "current",
+        "vibration"
+    ],
+    "class_mapping": {
+        "0": "NORMAL",
+        "1": "WARNING",
+        "2": "FAULT"
+    },
+    "classes": [
+        0,
+        1,
+        2
+    ],
+    "hyperparameters": {
+        "n_estimators": 100,
+        "max_depth": 6,
+        "min_samples_split": 4,
+        "min_samples_leaf": 2,
+        "class_weight": "balanced",
+        "random_state": 42
+    },
+    "dataset_size": {
+        "train_samples": 960,
+        "class_distribution_train": {
+            "NORMAL": 681,
+            "WARNING": 206,
+            "FAULT": 73
+        }
+    },
+    "training_metrics": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "fault_recall": 1.0
+    },
+    "feature_importances": {
+        "rpm": 0.2047,
+        "temperature": 0.2894,
+        "humidity": 0.0,
+        "current": 0.2759,
+        "vibration": 0.23
+    }
+}

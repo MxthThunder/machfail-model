@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Industrial Machine Health Monitor - AI Preview</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --border: rgba(255, 255, 255, 0.1);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --normal: #22c55e;
+            --warning: #f59e0b;
+            --fault: #ef4444;
+            --accent: #38bdf8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            padding: 2rem;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            color: var(--text-main);
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            backdrop-filter: blur(12px);
+        }
+
+        .card h2 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            color: var(--accent);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+        }
+
+        .slider-group {
+            margin-bottom: 1rem;
+        }
+
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 0.3rem;
+        }
+
+        .slider-header span:last-child {
+            color: var(--text-main);
+            font-weight: 600;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #334155;
+            outline: none;
+        }
+
+        .preset-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1.2rem;
+        }
+
+        button {
+            flex: 1;
+            padding: 0.6rem 0.8rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: #1e293b;
+            color: var(--text-main);
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.85rem;
+            transition: all 0.2s ease;
+        }
+
+        button:hover {
+            background: #334155;
+            border-color: var(--accent);
+        }
+
+        .btn-predict {
+            background: var(--accent);
+            color: #0f172a;
+            width: 100%;
+            margin-top: 1rem;
+            padding: 0.8rem;
+            font-size: 1rem;
+        }
+
+        .btn-predict:hover {
+            background: #7dd3fc;
+        }
+
+        /* Result Panel */
+        .status-badge {
+            display: inline-block;
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 1.1rem;
+            text-align: center;
+            width: 100%;
+            margin-bottom: 1rem;
+            background: #334155;
+        }
+
+        .badge-normal { background: rgba(34, 197, 94, 0.2); color: var(--normal); border: 1px solid var(--normal); }
+        .badge-warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); border: 1px solid var(--warning); }
+        .badge-fault { background: rgba(239, 68, 68, 0.2); color: var(--fault); border: 1px solid var(--fault); }
+
+        .score-circle {
+            text-align: center;
+            font-size: 3rem;
+            font-weight: 800;
+            margin: 1rem 0;
+        }
+
+        .factors-list {
+            list-style: none;
+            margin-top: 0.8rem;
+        }
+
+        .factors-list li {
+            padding: 0.4rem 0.6rem;
+            background: rgba(15, 23, 42, 0.5);
+            border-radius: 6px;
+            margin-bottom: 0.4rem;
+            font-size: 0.85rem;
+            color: #cbd5e1;
+            border-left: 3px solid var(--accent);
+        }
+
+        .meta-info {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 1rem;
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Industrial Machine Monitoring & Health Dashboard</h1>
+            <p>Person 2 Web Dashboard Integration Preview & Live AI Inference Client</p>
+        </header>
+
+        <div class="grid">
+            <!-- Sensor Controls -->
+            <div class="card">
+                <h2>Simulate Hardware Sensor Feeds</h2>
+                
+                <div class="slider-group">
+                    <div class="slider-header">
+                        <span>Rotational Speed (RPM)</span>
+                        <span id="val-rpm">1500 RPM</span>
+                    </div>
+                    <input type="range" id="input-rpm" min="0" max="3000" step="10" value="1500" oninput="updateValues()">
+                </div>
+
+                <div class="slider-group">
+                    <div class="slider-header">
+                        <span>Temperature (°C)</span>
+                        <span id="val-temp">32.0 °C</span>
+                    </div>
+                    <input type="range" id="input-temp" min="-10" max="120" step="0.5" value="32.0" oninput="updateValues()">
+                </div>
+
+                <div class="slider-group">
+                    <div class="slider-header">
+                        <span>Motor Current (A)</span>
+                        <span id="val-curr">0.72 A</span>
+                    </div>
+                    <input type="range" id="input-curr" min="0" max="5.0" step="0.02" value="0.72" oninput="updateValues()">
+                </div>
+
+                <div class="slider-group">
+                    <div class="slider-header">
+                        <span>Vibration Intensity (g)</span>
+                        <span id="val-vib">0.10 g</span>
+                    </div>
+                    <input type="range" id="input-vib" min="0" max="3.0" step="0.01" value="0.10" oninput="updateValues()">
+                </div>
+
+                <div class="slider-group">
+                    <div class="slider-header">
+                        <span>Humidity (%)</span>
+                        <span id="val-hum">60.0 %</span>
+                    </div>
+                    <input type="range" id="input-hum" min="0" max="100" step="1" value="60" oninput="updateValues()">
+                </div>
+
+                <div class="preset-buttons">
+                    <button onclick="setPreset('normal')">🟢 Normal</button>
+                    <button onclick="setPreset('warning')">🟠 Warning</button>
+                    <button onclick="setPreset('fault')">🔴 Fault</button>
+                </div>
+
+                <button class="btn-predict" onclick="sendPrediction()">Send Telemetry to AI API</button>
+            </div>
+
+            <!-- Live Prediction Result -->
+            <div class="card">
+                <h2>AI Prediction & Health Diagnostics</h2>
+                <div id="status-badge" class="status-badge badge-normal">NORMAL OPERATION</div>
+                
+                <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem;">Machine Health Score</div>
+                <div id="health-score" class="score-circle" style="color: var(--normal);">95%</div>
+
+                <div style="font-size: 0.9rem; margin-bottom: 0.8rem;">
+                    <strong>Diagnostic Summary:</strong>
+                    <p id="prediction-text" style="color: var(--text-muted); margin-top: 0.2rem;">
+                        Nominal operating conditions with stable sensor telemetry and smooth mechanical behavior.
+                    </p>
+                </div>
+
+                <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-main);">
+                    Contributing Sensor Factors:
+                </div>
+                <ul id="factors-list" class="factors-list">
+                    <li>All sensor channels operating within nominal baseline limits.</li>
+                </ul>
+
+                <div class="meta-info">
+                    Endpoint: <code id="api-url">http://127.0.0.1:8000/predict</code> | Latency: <span id="latency-text">0ms</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function updateValues() {
+            document.getElementById('val-rpm').innerText = document.getElementById('input-rpm').value + ' RPM';
+            document.getElementById('val-temp').innerText = parseFloat(document.getElementById('input-temp').value).toFixed(1) + ' °C';
+            document.getElementById('val-curr').innerText = parseFloat(document.getElementById('input-curr').value).toFixed(2) + ' A';
+            document.getElementById('val-vib').innerText = parseFloat(document.getElementById('input-vib').value).toFixed(2) + ' g';
+            document.getElementById('val-hum').innerText = document.getElementById('input-hum').value + ' %';
+        }
+
+        function setPreset(type) {
+            if (type === 'normal') {
+                document.getElementById('input-rpm').value = 1505;
+                document.getElementById('input-temp').value = 32.0;
+                document.getElementById('input-curr').value = 0.72;
+                document.getElementById('input-vib').value = 0.10;
+                document.getElementById('input-hum').value = 59.0;
+            } else if (type === 'warning') {
+                document.getElementById('input-rpm').value = 1380;
+                document.getElementById('input-temp').value = 42.5;
+                document.getElementById('input-curr').value = 0.98;
+                document.getElementById('input-vib').value = 0.28;
+                document.getElementById('input-hum').value = 62.0;
+            } else if (type === 'fault') {
+                document.getElementById('input-rpm').value = 920;
+                document.getElementById('input-temp').value = 58.0;
+                document.getElementById('input-curr').value = 1.60;
+                document.getElementById('input-vib').value = 0.65;
+                document.getElementById('input-hum').value = 65.0;
+            }
+            updateValues();
+            sendPrediction();
+        }
+
+        async function sendPrediction() {
+            const payload = {
+                rpm: parseFloat(document.getElementById('input-rpm').value),
+                temperature: parseFloat(document.getElementById('input-temp').value),
+                humidity: parseFloat(document.getElementById('input-hum').value),
+                current: parseFloat(document.getElementById('input-curr').value),
+                vibration: parseFloat(document.getElementById('input-vib').value)
+            };
+
+            const t0 = performance.now();
+            try {
+                const response = await fetch('http://127.0.0.1:8000/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const t1 = performance.now();
+                document.getElementById('latency-text').innerText = (t1 - t0).toFixed(1) + 'ms';
+
+                if (!response.ok) {
+                    alert('API Error: ' + response.statusText);
+                    return;
+                }
+
+                const data = await response.json();
+                
+                // Update Badge
+                const badge = document.getElementById('status-badge');
+                badge.className = 'status-badge ' + (
+                    data.status === 'NORMAL' ? 'badge-normal' :
+                    data.status === 'WARNING' ? 'badge-warning' : 'badge-fault'
+                );
+                badge.innerText = data.status + ' (' + (data.confidence * 100).toFixed(1) + '% CONFIDENCE)';
+
+                // Update Health Score
+                const scoreElem = document.getElementById('health-score');
+                scoreElem.innerText = data.health_score + '%';
+                scoreElem.style.color = (
+                    data.health_score >= 90 ? 'var(--normal)' :
+                    data.health_score >= 70 ? 'var(--warning)' : 'var(--fault)'
+                );
+
+                // Update Prediction text
+                document.getElementById('prediction-text').innerText = data.prediction;
+
+                // Update Factors
+                const list = document.getElementById('factors-list');
+                list.innerHTML = '';
+                data.contributing_factors.forEach(f => {
+                    const li = document.createElement('li');
+                    li.innerText = f;
+                    list.appendChild(li);
+                });
+
+            } catch (err) {
+                console.error(err);
+                alert('Could not connect to FastAPI server at http://127.0.0.1:8000. Is it running?');
+            }
+        }
+    </script>
+</body>
+</html>
