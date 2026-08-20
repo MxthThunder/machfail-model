@@ -1,7 +1,7 @@
 {
     "model_name": "RandomForestClassifier",
     "model_version": "1.0.0",
-    "training_date": "2026-08-20T10:20:36.167704",
+    "training_date": "2026-08-20T13:56:37.655823",
     "dataset_type": "synthetic",
     "data_source_note": "Trained on synthetic development telemetry. Retrain before production on real machine data.",
     "feature_names": [
