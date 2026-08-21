@@ -6,7 +6,6 @@ import Analytics from './pages/Analytics';
 import Alerts from './pages/Alerts';
 import AIPrediction from './pages/AIPrediction';
 import SystemStatus from './pages/SystemStatus';
-import Presentation from './pages/Presentation';
 
 export type Page =
   | 'overview'
@@ -15,8 +14,7 @@ export type Page =
   | 'analytics'
   | 'alerts'
   | 'ai-prediction'
-  | 'system-status'
-  | 'presentation';
+  | 'system-status';
 
 const NAV_ITEMS: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'overview', label: 'Overview', icon: <IconGrid /> },
@@ -25,7 +23,6 @@ const NAV_ITEMS: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'analytics', label: 'Analytics', icon: <IconBarChart /> },
   { page: 'alerts', label: 'Alerts', icon: <IconBell /> },
   { page: 'ai-prediction', label: 'AI Prediction', icon: <IconBrain /> },
-  { page: 'presentation', label: 'Presentation Deck', icon: <IconPresentation /> },
 ];
 
 export default function App() {
@@ -49,7 +46,6 @@ export default function App() {
     alerts: 'Alert Management',
     'ai-prediction': 'AI Predictive Maintenance',
     'system-status': 'System Status',
-    presentation: 'IoT Motor Monitoring Presentation Deck',
   };
 
   return (
@@ -243,11 +239,10 @@ export default function App() {
               setCommandedSpeed={setCommandedSpeed}
             />
           )}
-          {activePage === 'analytics' && <Analytics motorRunning={motorRunning} />}
+          {activePage === 'analytics' && <Analytics />}
           {activePage === 'alerts' && <Alerts />}
           {activePage === 'ai-prediction' && <AIPrediction motorRunning={motorRunning} />}
           {activePage === 'system-status' && <SystemStatus motorRunning={motorRunning} />}
-          {activePage === 'presentation' && <Presentation />}
         </main>
       </div>
     </div>
