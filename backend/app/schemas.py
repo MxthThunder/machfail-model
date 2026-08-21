@@ -16,6 +16,8 @@ class MotorSensorDataIn(BaseModel):
     temperature: float = Field(..., description="Temperature from DHT22 in degrees Celsius")
     humidity: float = Field(..., description="Relative humidity from DHT22 in percentage")
     ir: int = Field(..., description="IR Sensor digital status (0 or 1)")
+    ir_pulses: Optional[int] = Field(0, description="Cumulative IR pulses / counts")
+    rpm: Optional[float] = Field(0.0, description="Calculated RPM from IR sensor pulses")
     acs_adc: float = Field(..., description="Raw ADC reading from ACS712 current sensor")
     current: float = Field(..., description="Calibrated current in Amperes")
     mpu_x: float = Field(..., description="MPU6050 X-axis acceleration in g")
@@ -24,6 +26,7 @@ class MotorSensorDataIn(BaseModel):
     total_acceleration: float = Field(..., description="Total acceleration vector magnitude")
     vibration: float = Field(..., description="Calculated vibration value abs(total_accel - 1.0)")
     vibration_level: str = Field(..., description="Classified vibration level: LOW, MEDIUM, HIGH")
+    motor_pwm: Optional[int] = Field(0, description="Motor PWM speed duty cycle (0-255)")
     
     # Optional / Future Expandable fields
     voltage: Optional[float] = Field(None, description="Motor supply voltage if sensor present (nullable)")
@@ -34,17 +37,22 @@ class MotorSensorDataIn(BaseModel):
             "example": {
                 "motor_id": "M001",
                 "status": "ON",
-                "temperature": 42.5,
-                "humidity": 62.2,
-                "ir": 1,
-                "acs_adc": 1850,
-                "current": 2.40,
-                "mpu_x": 0.259,
-                "mpu_y": -0.965,
-                "mpu_z": -0.062,
-                "total_acceleration": 1.021,
-                "vibration": 0.021,
-                "vibration_level": "LOW"
+                "temperature": 33.9,
+                "humidity": 69.0,
+                "ir": 0,
+                "ir_pulses": 5516,
+                "rpm": 2945.7,
+                "acs_adc": 530,
+                "current": 0.08,
+                "mpu_x": 0.01,
+                "mpu_y": 0.09,
+                "mpu_z": -0.46,
+                "total_acceleration": 0.47,
+                "vibration": 0.53,
+                "vibration_level": "HIGH",
+                "motor_pwm": 255,
+                "voltage": None,
+                "esp32_ip": "192.168.1.xxx"
             }
         }
     )
@@ -69,6 +77,8 @@ class MotorLatestDataResponse(BaseModel):
     temperature: float
     humidity: float
     ir: int
+    ir_pulses: Optional[int] = 0
+    rpm: Optional[float] = 0.0
     acs_adc: float
     current: float
     mpu_x: float
@@ -77,6 +87,7 @@ class MotorLatestDataResponse(BaseModel):
     total_acceleration: float
     vibration: float
     vibration_level: str
+    motor_pwm: Optional[int] = 0
     voltage: Optional[float] = None
     esp32_ip: Optional[str] = None
     received_at: str
@@ -99,6 +110,8 @@ class MotorHistoryRecord(BaseModel):
     temperature: float
     humidity: float
     ir: int
+    ir_pulses: Optional[int] = 0
+    rpm: Optional[float] = 0.0
     acs_adc: float
     current: float
     mpu_x: float
@@ -107,6 +120,7 @@ class MotorHistoryRecord(BaseModel):
     total_acceleration: float
     vibration: float
     vibration_level: str
+    motor_pwm: Optional[int] = 0
     voltage: Optional[float] = None
     esp32_ip: Optional[str] = None
     timestamp: str
@@ -161,6 +175,44 @@ class CommandAckResponse(BaseModel):
     motor_id: str
     command_id: str
     acknowledged_at: str
+
+
+# ==========================================
+# Motor Condition Analysis Schemas
+# ==========================================
+
+class ConditionParameterResult(BaseModel):
+    """Detailed classification for an individual physical parameter."""
+    value: float
+    unit: str
+    condition: str
+    score: int
+
+
+class MotorConditionAnalysisRequest(BaseModel):
+    """Payload for manual or custom condition analysis."""
+    motor_id: str = Field("M001", description="Motor identifier")
+    temperature: float = Field(..., description="Temperature in °C")
+    rpm: float = Field(..., description="Motor rotational RPM")
+    current: float = Field(..., description="Motor current in Amperes")
+    vibration: float = Field(..., description="Vibration reading in g")
+
+
+class MotorConditionAnalysisResponse(BaseModel):
+    """Complete rule-based motor condition evaluation response."""
+    motor_id: str
+    temperature: ConditionParameterResult
+    rpm: ConditionParameterResult
+    current: ConditionParameterResult
+    vibration: ConditionParameterResult
+    overall_condition: str
+    condition_score: int
+    maximum_score: int = 8
+    failure_risk: str
+    risk_type: str = "Rule-Based Failure Risk"
+    stages: dict
+    message: str
+    timestamp: str
 
 
 # ==========================================

@@ -2,16 +2,23 @@ import { useState, useEffect, useRef } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
+import {
+  fetchLatestMotorTelemetry,
+  fetchMotorStatus,
+  connectMotorWebSocket,
+  MotorTelemetryData,
+} from '../services/api';
 
-type Metric = 'rpm' | 'temperature' | 'current' | 'voltage' | 'vibration';
+type Metric = 'rpm' | 'temperature' | 'current' | 'vibration' | 'humidity' | 'total_acceleration';
 type TimeRange = '1m' | '5m' | '1h' | '24h';
 
-const METRIC_CONFIG: Record<Metric, { label: string; unit: string; base: number; variance: number; color: string }> = {
-  rpm:         { label: 'RPM',         unit: 'RPM',  base: 1450, variance: 60,   color: '#2b7fff' },
-  temperature: { label: 'Temperature', unit: '°C',   base: 42.5, variance: 3,    color: '#f59e0b' },
-  current:     { label: 'Current',     unit: 'A',    base: 1.2,  variance: 0.25, color: '#a78bfa' },
-  voltage:     { label: 'Voltage',     unit: 'V',    base: 9.1,  variance: 0.4,  color: '#22d3ee' },
-  vibration:   { label: 'Vibration',   unit: 'g',    base: 0.05, variance: 0.02, color: '#22d06e' },
+const METRIC_CONFIG: Record<Metric, { label: string; unit: string; color: string }> = {
+  rpm:                { label: 'RPM',                unit: 'RPM', color: '#2b7fff' },
+  temperature:        { label: 'Temperature',        unit: '°C',  color: '#f59e0b' },
+  current:            { label: 'Current',            unit: 'A',   color: '#a78bfa' },
+  vibration:          { label: 'Vibration',          unit: 'g',   color: '#22d06e' },
+  humidity:           { label: 'Humidity',           unit: '%',   color: '#06b6d4' },
+  total_acceleration: { label: 'Total Acceleration', unit: 'g',   color: '#f43f5e' },
 };
 
 const TIME_RANGES: { key: TimeRange; label: string; points: number }[] = [
@@ -21,77 +28,102 @@ const TIME_RANGES: { key: TimeRange; label: string; points: number }[] = [
   { key: '24h', label: '24 Hours', points: 72 },
 ];
 
-function generateSeries(points: number, base: number, variance: number) {
-  let v = base;
-  return Array.from({ length: points }, (_, i) => {
-    v += (Math.random() - 0.5) * variance * 0.4;
-    v = Math.max(base - variance, Math.min(base + variance, v));
-    return { i, value: parseFloat(v.toFixed(2)) };
-  });
-}
-
-const LAST_RECORDED = {
-  rpm: 1450, temp: 42.5, humidity: 58, current: 1.2, voltage: 9.1, vibration: 'NORMAL',
-};
-
 export default function MachineDetail({
-  motorRunning,
   onBack,
 }: {
-  motorRunning: boolean;
+  motorRunning?: boolean;
   onBack: () => void;
 }) {
   const [metric, setMetric] = useState<Metric>('rpm');
   const [timeRange, setTimeRange] = useState<TimeRange>('5m');
-  const [chartData, setChartData] = useState(() => {
-    const cfg = METRIC_CONFIG.rpm;
-    return generateSeries(60, cfg.base, cfg.variance);
-  });
+  const [realTelemetry, setRealTelemetry] = useState<MotorTelemetryData | null>(null);
+  const [isHardwareOnline, setIsHardwareOnline] = useState<boolean>(false);
+  const [lastReceivedAt, setLastReceivedAt] = useState<string | null>(null);
+  const [chartData, setChartData] = useState<{ i: number; value: number }[]>([]);
   const tickRef = useRef(0);
 
-  // Regenerate when metric changes
+  // Initial fetch and WebSocket connection for real ESP32 telemetry
   useEffect(() => {
-    const cfg = METRIC_CONFIG[metric];
-    const t = TIME_RANGES.find(r => r.key === timeRange)!;
-    setChartData(generateSeries(t.points, cfg.base, cfg.variance));
-  }, [metric, timeRange]);
+    let isMounted = true;
 
-  // Live tick every second when running
+    async function loadInitial() {
+      const [latest, status] = await Promise.all([
+        fetchLatestMotorTelemetry('M001'),
+        fetchMotorStatus('M001'),
+      ]);
+      if (isMounted) {
+        if (latest) {
+          setRealTelemetry(latest);
+          setLastReceivedAt(latest.received_at || latest.timestamp || new Date().toISOString());
+        }
+        if (status) {
+          setIsHardwareOnline(status.online);
+        }
+      }
+    }
+
+    loadInitial();
+
+    // WebSocket real-time listener
+    const ws = connectMotorWebSocket('M001', (payload) => {
+      if (isMounted && payload.data) {
+        setRealTelemetry(payload.data);
+        setIsHardwareOnline(payload.online ?? true);
+        setLastReceivedAt(payload.data.received_at || new Date().toISOString());
+      }
+    });
+
+    // Fallback polling every 3 seconds if WebSocket is closed
+    const pollId = setInterval(async () => {
+      const [latest, status] = await Promise.all([
+        fetchLatestMotorTelemetry('M001'),
+        fetchMotorStatus('M001'),
+      ]);
+      if (isMounted) {
+        if (latest) setRealTelemetry(latest);
+        if (status) setIsHardwareOnline(status.online);
+      }
+    }, 3000);
+
+    return () => {
+      isMounted = false;
+      ws.close();
+      clearInterval(pollId);
+    };
+  }, []);
+
+  // Update chart when telemetry or metric changes
   useEffect(() => {
-    if (!motorRunning) return;
-    const cfg = METRIC_CONFIG[metric];
-    const id = setInterval(() => {
-      tickRef.current++;
-      setChartData(prev => {
-        const last = prev[prev.length - 1].value;
-        const next = parseFloat(
-          Math.max(cfg.base - cfg.variance, Math.min(cfg.base + cfg.variance,
-            last + (Math.random() - 0.5) * cfg.variance * 0.35
-          )).toFixed(2)
-        );
-        const t = TIME_RANGES.find(r => r.key === timeRange)!;
-        return [...prev.slice(-(t.points - 1)), { i: tickRef.current, value: next }];
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [motorRunning, metric, timeRange]);
+    if (!realTelemetry) return;
+    const val = Number(realTelemetry[metric as keyof MotorTelemetryData]) || 0;
+    tickRef.current++;
+    setChartData((prev) => {
+      const t = TIME_RANGES.find((r) => r.key === timeRange)!;
+      const next = [...prev.slice(-(t.points - 1)), { i: tickRef.current, value: parseFloat(val.toFixed(2)) }];
+      return next;
+    });
+  }, [realTelemetry, metric, timeRange]);
 
   const cfg = METRIC_CONFIG[metric];
-  const latest = chartData[chartData.length - 1]?.value ?? 0;
+  const latestChartValue = chartData[chartData.length - 1]?.value ?? (realTelemetry ? Number(realTelemetry[metric as keyof MotorTelemetryData]) : 0);
 
-  const sensorCards = [
-    { label: 'RPM', value: motorRunning ? '1,450' : null, unit: 'RPM', last: '1,450', icon: <IconGauge />, ok: true },
-    { label: 'Temperature', value: motorRunning ? '42.5' : null, unit: '°C', last: '42.5', icon: <IconThermo />, ok: true },
-    { label: 'Humidity', value: motorRunning ? '58' : null, unit: '%', last: '58', icon: <IconDroplet />, ok: true },
-    { label: 'Current', value: motorRunning ? '1.2' : null, unit: 'A', last: '1.2', icon: <IconZap />, ok: true },
-    { label: 'Voltage', value: motorRunning ? '9.1' : null, unit: 'V', last: '9.1', icon: <IconBattery />, ok: true },
-    { label: 'Vibration', value: motorRunning ? 'NORMAL' : null, unit: '', last: 'NORMAL', icon: <IconWave />, ok: true, isText: true },
-  ];
+  const getVibrationColor = (level?: string) => {
+    switch (level?.toUpperCase()) {
+      case 'LOW':
+        return '#22d06e';
+      case 'MEDIUM':
+        return '#f59e0b';
+      case 'HIGH':
+        return '#ef4444';
+      default:
+        return 'var(--text-muted)';
+    }
+  };
 
   return (
     <div className="p-6 space-y-5">
-      {/* Back + title */}
-      <div className="flex items-start justify-between">
+      {/* Back + Header */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <button
             onClick={onBack}
@@ -104,101 +136,179 @@ export default function MachineDetail({
             Back to Machines
           </button>
           <div className="flex items-center gap-3">
-            <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>MOTOR-01</h2>
-            <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Conveyor Motor</span>
-            <StatusBadge running={motorRunning} />
+            <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>MOTOR-01 (M001)</h2>
+            <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Industrial DC Motor Node</span>
+            <StatusBadge running={isHardwareOnline && realTelemetry?.status === 'ON'} online={isHardwareOnline} hasData={realTelemetry !== null} />
           </div>
         </div>
-        <div className="text-right">
-          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Serial</div>
-          <div className="font-mono-data text-xs" style={{ color: 'var(--text-primary)' }}>ESP-A14-CM-001</div>
+        <div className="text-right text-xs space-y-0.5">
+          <div style={{ color: 'var(--text-muted)' }}>ESP32 IP: <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{realTelemetry?.esp32_ip || 'Not Connected'}</span></div>
+          <div style={{ color: 'var(--text-muted)' }}>Last Telemetry: <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{lastReceivedAt ? new Date(lastReceivedAt).toLocaleTimeString() : 'Awaiting data'}</span></div>
         </div>
       </div>
 
-      {/* Offline notice */}
-      {!motorRunning && (
+      {/* Connection Notice */}
+      {!realTelemetry && (
         <div
-          className="flex items-center gap-3 px-4 py-3 rounded-lg text-sm"
-          style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.2)', color: 'var(--status-warning)' }}
+          className="flex items-center justify-between px-4 py-3 rounded-lg text-xs"
+          style={{ background: 'rgba(14,165,233,0.08)', border: '1px solid rgba(14,165,233,0.25)', color: 'var(--accent-blue)' }}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-          </svg>
-          Motor is currently stopped. Showing last recorded sensor values.
+          <div className="flex items-center gap-2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span><b>Awaiting Real ESP32 Hardware:</b> Power on the ESP32 and send live telemetry to <code>POST /api/motor/data</code>.</span>
+          </div>
+          <span className="font-mono text-[11px]">http://localhost:8000/api/motor/data</span>
         </div>
       )}
 
-      {/* Sensor cards */}
-      <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
-        {sensorCards.map((sc) => (
-          <div
-            key={sc.label}
-            className="rounded-lg px-4 py-3 flex flex-col gap-1"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-muted)' }}>
-                {sc.label}
-              </span>
-              <span style={{ color: 'var(--text-muted)', opacity: 0.6 }}>{sc.icon}</span>
-            </div>
-            {sc.value !== null ? (
-              <div>
-                <span className="font-mono-data text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
-                  {sc.value}
-                </span>
-                {sc.unit && (
-                  <span className="ml-1 text-xs" style={{ color: 'var(--text-muted)' }}>{sc.unit}</span>
-                )}
-              </div>
-            ) : (
-              <div>
-                <span className="font-mono-data text-xl font-bold" style={{ color: 'var(--text-muted)' }}>
-                  {sc.last}
-                </span>
-                {sc.unit && (
-                  <span className="ml-1 text-xs" style={{ color: 'var(--text-muted)' }}>{sc.unit}</span>
-                )}
-                <div className="text-[9px] mt-0.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
-                  Last recorded
-                </div>
-              </div>
-            )}
-            {/* Status dot */}
-            <div className="flex items-center gap-1 mt-0.5">
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: sc.value !== null ? 'var(--status-online)' : 'var(--status-offline)' }}
-              />
-              <span className="text-[9px] uppercase tracking-wider" style={{ color: sc.value !== null ? 'var(--status-online)' : 'var(--text-muted)' }}>
-                {sc.value !== null ? 'Live' : 'Stale'}
-              </span>
-            </div>
-          </div>
-        ))}
+      {/* Grid of All Real Sensor Metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        {/* RPM */}
+        <SensorCard
+          label="RPM"
+          value={realTelemetry ? realTelemetry.rpm.toFixed(1) : '---'}
+          unit="RPM"
+          icon={<IconGauge />}
+          isLive={isHardwareOnline}
+          subtext={`Pulses: ${realTelemetry ? realTelemetry.ir_pulses : 0}`}
+        />
+
+        {/* Temperature */}
+        <SensorCard
+          label="Temperature"
+          value={realTelemetry ? realTelemetry.temperature.toFixed(1) : '---'}
+          unit="°C"
+          icon={<IconThermo />}
+          isLive={isHardwareOnline}
+          subtext="DHT22 Sensor"
+        />
+
+        {/* Humidity */}
+        <SensorCard
+          label="Humidity"
+          value={realTelemetry ? realTelemetry.humidity.toFixed(1) : '---'}
+          unit="%"
+          icon={<IconDroplet />}
+          isLive={isHardwareOnline}
+          subtext="Ambient RH"
+        />
+
+        {/* Current */}
+        <SensorCard
+          label="Current"
+          value={realTelemetry ? realTelemetry.current.toFixed(2) : '---'}
+          unit="A"
+          icon={<IconZap />}
+          isLive={isHardwareOnline}
+          subtext={`ADC: ${realTelemetry ? realTelemetry.acs_adc : 0}`}
+        />
+
+        {/* Vibration Level */}
+        <SensorCard
+          label="Vibration"
+          value={realTelemetry ? `${realTelemetry.vibration.toFixed(2)} g` : '---'}
+          unit=""
+          icon={<IconWave />}
+          isLive={isHardwareOnline}
+          badge={realTelemetry?.vibration_level}
+          badgeColor={getVibrationColor(realTelemetry?.vibration_level)}
+          subtext={`Level: ${realTelemetry ? realTelemetry.vibration_level : '---'}`}
+        />
+
+        {/* Motor PWM / State */}
+        <SensorCard
+          label="Motor PWM"
+          value={realTelemetry ? `${realTelemetry.motor_pwm} / 255` : '---'}
+          unit=""
+          icon={<IconSliders />}
+          isLive={isHardwareOnline}
+          subtext={`Status: ${realTelemetry?.status || 'OFF'}`}
+        />
       </div>
 
-      {/* Live chart */}
+      {/* Detailed Diagnostics: MPU 3-Axis & IR Sensor */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="p-4 rounded-lg bg-slate-900/80 border border-slate-800 flex flex-col justify-between">
+          <div className="text-xs font-bold text-cyan-400 uppercase tracking-wider mb-2">📐 MPU6050 3-Axis Acceleration</div>
+          <div className="grid grid-cols-3 gap-2 text-center my-1 font-mono text-xs">
+            <div className="p-2 rounded bg-slate-950/60 border border-slate-800">
+              <div className="text-[10px] text-slate-500">X-Axis</div>
+              <div className="font-bold text-white mt-0.5">{realTelemetry ? `${realTelemetry.mpu_x.toFixed(3)} g` : '---'}</div>
+            </div>
+            <div className="p-2 rounded bg-slate-950/60 border border-slate-800">
+              <div className="text-[10px] text-slate-500">Y-Axis</div>
+              <div className="font-bold text-white mt-0.5">{realTelemetry ? `${realTelemetry.mpu_y.toFixed(3)} g` : '---'}</div>
+            </div>
+            <div className="p-2 rounded bg-slate-950/60 border border-slate-800">
+              <div className="text-[10px] text-slate-500">Z-Axis</div>
+              <div className="font-bold text-white mt-0.5">{realTelemetry ? `${realTelemetry.mpu_z.toFixed(3)} g` : '---'}</div>
+            </div>
+          </div>
+          <div className="text-[11px] text-slate-400 flex justify-between mt-2 pt-2 border-t border-slate-800/80">
+            <span>Total Accel: <b className="text-white">{realTelemetry ? `${realTelemetry.total_acceleration.toFixed(3)} g` : '---'}</b></span>
+            <span>Vibration: <b className="text-emerald-400">{realTelemetry ? `${realTelemetry.vibration.toFixed(3)} g` : '---'}</b></span>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-lg bg-slate-900/80 border border-slate-800 flex flex-col justify-between">
+          <div className="text-xs font-bold text-sky-400 uppercase tracking-wider mb-2">👁️ Optical IR & Speed Encoder</div>
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between items-center py-1 border-b border-slate-800">
+              <span className="text-slate-400">IR State:</span>
+              <span className="font-mono font-bold text-white">{realTelemetry ? (realTelemetry.ir === 0 ? 'LOW (Beam Broken / Detected)' : 'HIGH') : '---'}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-slate-800">
+              <span className="text-slate-400">Cumulative IR Pulses:</span>
+              <span className="font-mono font-bold text-cyan-400">{realTelemetry ? realTelemetry.ir_pulses : '---'}</span>
+            </div>
+            <div className="flex justify-between items-center py-1">
+              <span className="text-slate-400">Calculated RPM:</span>
+              <span className="font-mono font-bold text-emerald-400">{realTelemetry ? `${realTelemetry.rpm.toFixed(1)} RPM` : '---'}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-lg bg-slate-900/80 border border-slate-800 flex flex-col justify-between">
+          <div className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-2">⚡ Electrical Current & Actuation</div>
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between items-center py-1 border-b border-slate-800">
+              <span className="text-slate-400">ACS712 ADC Count:</span>
+              <span className="font-mono font-bold text-white">{realTelemetry ? realTelemetry.acs_adc : '---'}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-slate-800">
+              <span className="text-slate-400">Motor Current:</span>
+              <span className="font-mono font-bold text-amber-400">{realTelemetry ? `${realTelemetry.current.toFixed(2)} A` : '---'}</span>
+            </div>
+            <div className="flex justify-between items-center py-1">
+              <span className="text-slate-400">L298N PWM Duty:</span>
+              <span className="font-mono font-bold text-white">{realTelemetry ? `${realTelemetry.motor_pwm} / 255` : '---'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Live Waveform Chart */}
       <div
         className="rounded-lg p-5"
         style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
       >
-        {/* Chart header */}
         <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full pulse-dot" style={{ background: cfg.color }} />
             <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-              Live: {cfg.label}
+              Real-Time Waveform: {cfg.label}
             </span>
             <span className="font-mono-data text-xs px-2 py-0.5 rounded" style={{ background: 'var(--bg-card2)', color: cfg.color }}>
-              {latest} {cfg.unit}
+              {latestChartValue} {cfg.unit}
             </span>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             {/* Metric selector */}
             <div className="flex gap-1 p-1 rounded" style={{ background: 'var(--bg-card2)' }}>
-              {(Object.keys(METRIC_CONFIG) as Metric[]).map(m => (
+              {(Object.keys(METRIC_CONFIG) as Metric[]).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMetric(m)}
@@ -216,7 +326,7 @@ export default function MachineDetail({
 
             {/* Time range */}
             <div className="flex gap-1 p-1 rounded" style={{ background: 'var(--bg-card2)' }}>
-              {TIME_RANGES.map(t => (
+              {TIME_RANGES.map((t) => (
                 <button
                   key={t.key}
                   onClick={() => setTimeRange(t.key)}
@@ -235,7 +345,7 @@ export default function MachineDetail({
         </div>
 
         <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={chartData} margin={{ top: 5, right: 8, left: -10, bottom: 0 }}>
+          <AreaChart data={chartData.length > 0 ? chartData : [{ i: 0, value: 0 }]} margin={{ top: 5, right: 8, left: -10, bottom: 0 }}>
             <defs>
               <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor={cfg.color} stopOpacity={0.25} />
@@ -272,20 +382,79 @@ export default function MachineDetail({
   );
 }
 
-function StatusBadge({ running }: { running: boolean }) {
+function SensorCard({
+  label,
+  value,
+  unit,
+  icon,
+  isLive,
+  subtext,
+  badge,
+  badgeColor,
+}: {
+  label: string;
+  value: string;
+  unit: string;
+  icon: React.ReactNode;
+  isLive: boolean;
+  subtext?: string;
+  badge?: string;
+  badgeColor?: string;
+}) {
+  return (
+    <div
+      className="rounded-lg px-4 py-3 flex flex-col justify-between gap-1"
+      style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-muted)' }}>
+          {label}
+        </span>
+        <span style={{ color: 'var(--text-muted)', opacity: 0.6 }}>{icon}</span>
+      </div>
+
+      <div className="my-0.5">
+        <span className="font-mono-data text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
+          {value}
+        </span>
+        {unit && <span className="ml-1 text-xs" style={{ color: 'var(--text-muted)' }}>{unit}</span>}
+      </div>
+
+      <div className="flex items-center justify-between text-[9px] pt-1 border-t border-slate-800/60">
+        <span style={{ color: 'var(--text-muted)' }}>{subtext || (isLive ? 'Live Sensor' : 'Offline')}</span>
+        {badge && (
+          <span className="font-bold px-1.5 py-0.5 rounded text-[8px]" style={{ background: `${badgeColor}22`, color: badgeColor, border: `1px solid ${badgeColor}44` }}>
+            {badge}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ running, online, hasData }: { running: boolean; online: boolean; hasData: boolean }) {
+  if (!hasData) {
+    return (
+      <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-slate-800 border border-slate-700 text-slate-400">
+        <div className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+        No Hardware Signal
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider"
       style={
-        running
+        online
           ? { background: 'rgba(34,208,110,0.1)', border: '1px solid rgba(34,208,110,0.25)', color: 'var(--status-online)' }
           : { background: 'rgba(51,79,107,0.15)', border: '1px solid rgba(51,79,107,0.3)', color: 'var(--status-offline)' }
       }
     >
-      <div className={`w-1.5 h-1.5 rounded-full ${running ? 'pulse-dot' : ''}`}
-        style={{ background: running ? 'var(--status-online)' : 'var(--status-offline)' }}
+      <div className={`w-1.5 h-1.5 rounded-full ${online && running ? 'pulse-dot' : ''}`}
+        style={{ background: online ? 'var(--status-online)' : 'var(--status-offline)' }}
       />
-      {running ? 'Online' : 'Offline'}
+      {online ? (running ? 'Online (Motor Running)' : 'Online (Motor Idle)') : 'Offline'}
     </div>
   );
 }
@@ -302,9 +471,9 @@ function IconDroplet() {
 function IconZap() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>;
 }
-function IconBattery() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>;
-}
 function IconWave() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 12h2.5c1 0 1.5-1 2-2s1-2 2-2 1.5 1 2 2 1 2 2 2 1.5-1 2-2 1-2 2-2 1.5 1 2 2 1 2 2 2"/></svg>;
+}
+function IconSliders() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg>;
 }

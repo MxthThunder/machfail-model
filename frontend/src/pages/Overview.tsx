@@ -1,5 +1,5 @@
-﻿import { useState, useEffect } from 'react';
-import { fetchPrediction } from '../services/api';
+import { useState, useEffect } from 'react';
+import { fetchMotorStatus, fetchLatestMotorTelemetry, fetchMotorCondition } from '../services/api';
 
 const MACHINES = [
   {
@@ -59,39 +59,45 @@ const MACHINES = [
 ];
 
 export default function Overview({
-  motorRunning,
   onViewMachine,
 }: {
-  motorRunning: boolean;
+  motorRunning?: boolean;
   onViewMachine: () => void;
 }) {
-  const [m1Health, setM1Health] = useState<number>(96);
-  const [m1Status, setM1Status] = useState<string>('NORMAL');
+  const [isOnline, setIsOnline] = useState<boolean>(false);
+  const [m1Rpm, setM1Rpm] = useState<number | null>(null);
+  const [m1Condition, setM1Condition] = useState<string>('NORMAL');
 
-  // Fetch live AI prediction from Person 3 backend
+  // Fetch real ESP32 status and telemetry
   useEffect(() => {
-    if (!motorRunning) return;
-    fetchPrediction({
-      rpm: 1450,
-      temperature: 36.5,
-      humidity: 58.0,
-      current: 0.74,
-      vibration: 0.08,
-    })
-      .then(res => {
-        setM1Health(res.health_score);
-        setM1Status(res.status);
-      })
-      .catch(() => {
-        // Fallback default
-      });
-  }, [motorRunning]);
+    let isMounted = true;
+
+    async function loadData() {
+      const [status, latest, cond] = await Promise.all([
+        fetchMotorStatus('M001'),
+        fetchLatestMotorTelemetry('M001'),
+        fetchMotorCondition('M001'),
+      ]);
+      if (isMounted) {
+        if (status) setIsOnline(status.online);
+        if (latest) setM1Rpm(latest.rpm);
+        if (cond) setM1Condition(cond.overall_condition);
+      }
+    }
+
+    loadData();
+    const interval = setInterval(loadData, 3000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const SUMMARY = [
     { label: 'Total Machines', value: 6, color: 'var(--accent-blue)' },
-    { label: 'Online', value: motorRunning ? 1 : 0, color: 'var(--status-online)' },
-    { label: 'Offline', value: motorRunning ? 5 : 6, color: 'var(--status-offline)' },
-    { label: 'Active Alerts', value: m1Status === 'NORMAL' ? 0 : 1, color: m1Status === 'NORMAL' ? 'var(--text-muted)' : 'var(--status-warning)' },
+    { label: 'Online Hardware', value: isOnline ? 1 : 0, color: 'var(--status-online)' },
+    { label: 'Offline', value: isOnline ? 5 : 6, color: 'var(--status-offline)' },
+    { label: 'Condition Alerts', value: m1Condition === 'NORMAL' ? 0 : 1, color: m1Condition === 'NORMAL' ? 'var(--text-muted)' : 'var(--status-warning)' },
   ];
 
   return (
@@ -128,16 +134,16 @@ export default function Overview({
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
         {MACHINES.map((m) => {
           const isM1 = m.id === 'MOTOR-01';
-          const isOnline = isM1 ? motorRunning : false;
+          const machineOnline = isM1 ? isOnline : false;
           const displayMachine = isM1
-            ? { ...m, health: isOnline ? m1Health : null }
+            ? { ...m, online: isOnline, rpm: isOnline && m1Rpm !== null ? Math.round(m1Rpm) : null }
             : m;
 
           return (
             <MachineCard
               key={m.id}
               machine={displayMachine}
-              isOnline={isOnline}
+              isOnline={machineOnline}
               onView={isM1 ? onViewMachine : undefined}
             />
           );

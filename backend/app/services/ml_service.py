@@ -16,6 +16,9 @@ class MLFeaturePayload(BaseModel):
     motor_id: str = Field(..., description="Target motor identifier")
     temperature: float = Field(..., description="DHT22 temperature (°C)")
     humidity: float = Field(..., description="DHT22 relative humidity (%)")
+    ir: Optional[int] = Field(0, description="IR sensor state (0 or 1)")
+    ir_pulses: Optional[int] = Field(0, description="Cumulative IR pulses")
+    rpm: Optional[float] = Field(0.0, description="Motor rotational RPM")
     current: float = Field(..., description="ACS712 current reading (Amperes)")
     voltage: Optional[float] = Field(None, description="Supply voltage (nullable/optional)")
     mpu_x: float = Field(..., description="MPU6050 X-axis acceleration (g)")
@@ -23,6 +26,7 @@ class MLFeaturePayload(BaseModel):
     mpu_z: float = Field(..., description="MPU6050 Z-axis acceleration (g)")
     total_acceleration: float = Field(..., description="Total acceleration magnitude (g)")
     vibration: float = Field(..., description="Vibration deviation magnitude (g)")
+    motor_pwm: Optional[int] = Field(0, description="Motor PWM speed duty (0-255)")
     motor_runtime_seconds: float = Field(0.0, description="Accumulated motor runtime in seconds")
 
 

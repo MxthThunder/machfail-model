@@ -17,8 +17,11 @@ from app.schemas import (
     PendingCommandResponse,
     CommandAckRequest,
     CommandAckResponse,
+    MotorConditionAnalysisRequest,
+    MotorConditionAnalysisResponse,
 )
 from app.services.motor_service import motor_service
+from app.services.condition_service import condition_service
 
 logger = logging.getLogger(__name__)
 
@@ -159,4 +162,56 @@ def acknowledge_command(
         payload.command_id,
         payload.status,
         db
+    )
+
+
+@router.post(
+    "/analyze",
+    response_model=MotorConditionAnalysisResponse,
+    summary="Analyze motor condition from provided sensor parameters"
+)
+def analyze_motor_condition(
+    payload: MotorConditionAnalysisRequest
+):
+    """
+    Evaluates Temperature, RPM, Current, and Vibration parameters against
+    standard thresholds, calculates condition score (0-8), failure risk (LOW/MEDIUM/HIGH),
+    and generates clear explanatory messages.
+    """
+    return condition_service.evaluate_condition(
+        motor_id=payload.motor_id,
+        temperature=payload.temperature,
+        rpm=payload.rpm,
+        current=payload.current,
+        vibration=payload.vibration
+    )
+
+
+@router.get(
+    "/condition/{motor_id}",
+    response_model=MotorConditionAnalysisResponse,
+    summary="Get condition analysis for latest real ESP32 motor telemetry"
+)
+def get_motor_condition_analysis(
+    motor_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves the most recent real ESP32 telemetry reading from database/cache
+    and performs full rule-based condition & failure risk analysis.
+    """
+    latest = motor_service.get_latest_data(motor_id, db)
+    if not latest:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No telemetry records found for motor ID: {motor_id}"
+        )
+
+    return condition_service.evaluate_condition(
+        motor_id=latest.motor_id,
+        temperature=latest.temperature,
+        rpm=latest.rpm if latest.rpm is not None else 0.0,
+        current=latest.current,
+        vibration=latest.vibration,
+        timestamp=latest.received_at
     )

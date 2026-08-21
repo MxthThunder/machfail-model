@@ -46,21 +46,26 @@ def test_health_check():
 # ==========================================
 
 def test_ingest_esp32_sensor_data():
-    """Verify POST /api/motor/data accepts realistic ESP32 sensor readings."""
+    """Verify POST /api/motor/data accepts the exact real ESP32 sensor payload."""
     payload = {
         "motor_id": "M001",
         "status": "ON",
-        "temperature": 42.5,
-        "humidity": 62.2,
-        "ir": 1,
-        "acs_adc": 1850,
-        "current": 2.40,
-        "mpu_x": 0.259,
-        "mpu_y": -0.965,
-        "mpu_z": -0.062,
-        "total_acceleration": 1.021,
-        "vibration": 0.021,
-        "vibration_level": "LOW"
+        "temperature": 33.9,
+        "humidity": 69.0,
+        "ir": 0,
+        "ir_pulses": 5516,
+        "rpm": 2945.7,
+        "acs_adc": 530,
+        "current": 0.08,
+        "mpu_x": 0.01,
+        "mpu_y": 0.09,
+        "mpu_z": -0.46,
+        "total_acceleration": 0.47,
+        "vibration": 0.53,
+        "vibration_level": "HIGH",
+        "motor_pwm": 255,
+        "voltage": None,
+        "esp32_ip": "192.168.1.150"
     }
     response = client.post("/api/motor/data", json=payload)
     assert response.status_code == 201
@@ -76,7 +81,7 @@ def test_ingest_esp32_sensor_data():
 # ==========================================
 
 def test_get_latest_motor_data():
-    """Verify GET /api/motor/latest retrieves the most recent real sensor reading."""
+    """Verify GET /api/motor/latest retrieves the most recent real sensor reading including new fields."""
     # 404 when no data exists
     res_empty = client.get("/api/motor/latest?motor_id=M001")
     assert res_empty.status_code == 404
@@ -85,17 +90,22 @@ def test_get_latest_motor_data():
     payload = {
         "motor_id": "M001",
         "status": "ON",
-        "temperature": 43.1,
-        "humidity": 60.5,
-        "ir": 1,
-        "acs_adc": 1890,
-        "current": 2.55,
-        "mpu_x": 0.120,
-        "mpu_y": -0.980,
-        "mpu_z": -0.050,
-        "total_acceleration": 1.015,
-        "vibration": 0.015,
-        "vibration_level": "LOW"
+        "temperature": 33.9,
+        "humidity": 69.0,
+        "ir": 0,
+        "ir_pulses": 5516,
+        "rpm": 2945.7,
+        "acs_adc": 530,
+        "current": 0.08,
+        "mpu_x": 0.01,
+        "mpu_y": 0.09,
+        "mpu_z": -0.46,
+        "total_acceleration": 0.47,
+        "vibration": 0.53,
+        "vibration_level": "HIGH",
+        "motor_pwm": 255,
+        "voltage": None,
+        "esp32_ip": "192.168.1.150"
     }
     client.post("/api/motor/data", json=payload)
 
@@ -105,10 +115,16 @@ def test_get_latest_motor_data():
     data = response.json()
     assert data["motor_id"] == "M001"
     assert data["status"] == "ON"
-    assert data["temperature"] == 43.1
-    assert data["humidity"] == 60.5
-    assert data["current"] == 2.55
-    assert data["vibration_level"] == "LOW"
+    assert data["temperature"] == 33.9
+    assert data["humidity"] == 69.0
+    assert data["ir"] == 0
+    assert data["ir_pulses"] == 5516
+    assert data["rpm"] == 2945.7
+    assert data["acs_adc"] == 530
+    assert data["current"] == 0.08
+    assert data["vibration_level"] == "HIGH"
+    assert data["motor_pwm"] == 255
+    assert data["esp32_ip"] == "192.168.1.150"
     assert "received_at" in data
 
 
@@ -315,8 +331,42 @@ def test_ml_service_boundary():
 # ==========================================
 
 def test_websocket_realtime_broadcast():
-    """Verify WebSocket connection and ping/pong heartbeat."""
+    """Verify WebSocket connection, ping/pong heartbeat, and live ESP32 telemetry broadcast."""
     with client.websocket_connect("/ws/motor/M001") as websocket:
         websocket.send_text("ping")
         response = websocket.receive_text()
         assert response == "pong"
+
+        # Ingest real ESP32 data while WebSocket client is listening
+        payload = {
+            "motor_id": "M001",
+            "status": "ON",
+            "temperature": 33.9,
+            "humidity": 69.0,
+            "ir": 0,
+            "ir_pulses": 5516,
+            "rpm": 2945.7,
+            "acs_adc": 530,
+            "current": 0.08,
+            "mpu_x": 0.01,
+            "mpu_y": 0.09,
+            "mpu_z": -0.46,
+            "total_acceleration": 0.47,
+            "vibration": 0.53,
+            "vibration_level": "HIGH",
+            "motor_pwm": 255,
+            "voltage": None,
+            "esp32_ip": "192.168.1.150"
+        }
+        res = client.post("/api/motor/data", json=payload)
+        assert res.status_code == 201
+
+        # Receive real-time push message
+        msg = websocket.receive_json()
+        assert msg["type"] == "telemetry"
+        assert msg["online"] is True
+        assert msg["data"]["rpm"] == 2945.7
+        assert msg["data"]["ir_pulses"] == 5516
+        assert msg["data"]["motor_pwm"] == 255
+        assert msg["data"]["temperature"] == 33.9
+        assert msg["data"]["vibration_level"] == "HIGH"

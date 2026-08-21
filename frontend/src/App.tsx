@@ -6,6 +6,7 @@ import Analytics from './pages/Analytics';
 import Alerts from './pages/Alerts';
 import AIPrediction from './pages/AIPrediction';
 import SystemStatus from './pages/SystemStatus';
+import Presentation from './pages/Presentation';
 
 export type Page =
   | 'overview'
@@ -14,7 +15,8 @@ export type Page =
   | 'analytics'
   | 'alerts'
   | 'ai-prediction'
-  | 'system-status';
+  | 'system-status'
+  | 'presentation';
 
 const NAV_ITEMS: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'overview', label: 'Overview', icon: <IconGrid /> },
@@ -23,6 +25,7 @@ const NAV_ITEMS: { page: Page; label: string; icon: React.ReactNode }[] = [
   { page: 'analytics', label: 'Analytics', icon: <IconBarChart /> },
   { page: 'alerts', label: 'Alerts', icon: <IconBell /> },
   { page: 'ai-prediction', label: 'AI Prediction', icon: <IconBrain /> },
+  { page: 'presentation', label: 'Presentation Deck', icon: <IconPresentation /> },
 ];
 
 export default function App() {
@@ -46,6 +49,7 @@ export default function App() {
     alerts: 'Alert Management',
     'ai-prediction': 'AI Predictive Maintenance',
     'system-status': 'System Status',
+    presentation: 'IoT Motor Monitoring Presentation Deck',
   };
 
   return (
@@ -243,6 +247,7 @@ export default function App() {
           {activePage === 'alerts' && <Alerts />}
           {activePage === 'ai-prediction' && <AIPrediction motorRunning={motorRunning} />}
           {activePage === 'system-status' && <SystemStatus motorRunning={motorRunning} />}
+          {activePage === 'presentation' && <Presentation />}
         </main>
       </div>
     </div>
@@ -323,6 +328,14 @@ function IconBrain() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.46 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z" />
       <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.46 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z" />
+    </svg>
+  );
+}
+function IconPresentation() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 3h20" /><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3" />
+      <path d="m7 21 5-5 5 5" />
     </svg>
   );
 }

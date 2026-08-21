@@ -1,441 +1,541 @@
-﻿import { useState, useEffect } from 'react';
-import { fetchPrediction, fetchModelInfo, type PredictionResponse, type ModelInfoResponse } from '../services/api';
+import { useState, useEffect } from 'react';
+import {
+  fetchMotorCondition,
+  analyzeMotorCondition,
+  connectMotorWebSocket,
+  fetchMotorStatus,
+  type MotorConditionAnalysis,
+} from '../services/api';
 
-type PredState = 'idle' | 'loading' | 'result';
-type DemoMode = 'normal' | 'warning' | 'critical';
-
-interface PredictionData {
-  health: number;
-  failureProb: number;
-  prediction: string;
-  risk: string;
-  recommendation: string;
-  color: string;
-  bgColor: string;
-  borderColor: string;
-  factors: string[];
-  isLiveApi?: boolean;
-}
-
-const PRED_FALLBACKS: Record<DemoMode, PredictionData> = {
-  normal: {
-    health: 96,
-    failureProb: 4,
-    prediction: 'NORMAL OPERATION',
-    risk: 'LOW',
-    recommendation: 'Nominal operating conditions with stable sensor telemetry and smooth mechanical behavior.',
-    color: 'var(--status-online)',
-    bgColor: 'rgba(34,208,110,0.06)',
-    borderColor: 'rgba(34,208,110,0.2)',
-    factors: ['All sensor channels operating within nominal baseline limits.'],
-  },
-  warning: {
-    health: 76,
-    failureProb: 38,
-    prediction: 'WARNING - ELEVATED SENSOR STRAIN',
-    risk: 'MEDIUM',
-    recommendation: 'Elevated motor temperature and higher current draw during continuous rotation. Inspection recommended within 48 hours.',
-    color: 'var(--status-warning)',
-    bgColor: 'rgba(245,158,11,0.06)',
-    borderColor: 'rgba(245,158,11,0.2)',
-    factors: ['Elevated motor temperature (>42°C)', 'Higher current draw during continuous rotation (>0.95A)'],
-  },
-  critical: {
-    health: 38,
-    failureProb: 88,
-    prediction: 'FAULT DETECTED - IMMINENT BREAKDOWN',
-    risk: 'HIGH',
-    recommendation: 'Critical speed sag, high current, and severe mechanical vibration detected. Immediate shutdown recommended to prevent motor burnout.',
-    color: 'var(--status-critical)',
-    bgColor: 'rgba(240,64,64,0.06)',
-    borderColor: 'rgba(240,64,64,0.2)',
-    factors: ['Severe RPM loss / speed sag (<1100 RPM)', 'Vibration threshold exceeded (>0.45g)', 'Critical thermal build-up (>50°C)'],
-  },
-};
+type OperatingMode = 'live' | 'simulation';
 
 export default function AIPrediction({ motorRunning }: { motorRunning: boolean }) {
-  const [state, setState] = useState<PredState>('idle');
-  const [demoMode, setDemoMode] = useState<DemoMode>('normal');
-  const [activeStep, setActiveStep] = useState<number>(0);
-  const [result, setResult] = useState<PredictionData | null>(null);
-  const [modelInfo, setModelInfo] = useState<ModelInfoResponse | null>(null);
+  const [operatingMode, setOperatingMode] = useState<OperatingMode>('live');
 
+  // Live Mode State
+  const [liveCondition, setLiveCondition] = useState<MotorConditionAnalysis | null>(null);
+  const [isHardwareOnline, setIsHardwareOnline] = useState<boolean>(false);
+  const [lastTelemetryTime, setLastTelemetryTime] = useState<string | null>(null);
+
+  // Simulation Mode State
+  const [simTemp, setSimTemp] = useState<string>('32.0');
+  const [simRpm, setSimRpm] = useState<string>('1400');
+  const [simCurrent, setSimCurrent] = useState<string>('0.50');
+  const [simVibration, setSimVibration] = useState<string>('1000');
+  const [simResult, setSimResult] = useState<MotorConditionAnalysis | null>(null);
+  const [simError, setSimError] = useState<string | null>(null);
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+
+  // Load live condition on mount and listen to WebSocket
   useEffect(() => {
-    fetchModelInfo().then(info => setModelInfo(info));
+    let isMounted = true;
+
+    async function loadLiveTelemetry() {
+      const [condition, status] = await Promise.all([
+        fetchMotorCondition('M001'),
+        fetchMotorStatus('M001'),
+      ]);
+      if (isMounted) {
+        if (condition) {
+          setLiveCondition(condition);
+          setLastTelemetryTime(condition.timestamp);
+        }
+        if (status) {
+          setIsHardwareOnline(status.online);
+        }
+      }
+    }
+
+    loadLiveTelemetry();
+
+    // WebSocket real-time subscription for live ESP32 data
+    const ws = connectMotorWebSocket('M001', (payload) => {
+      if (isMounted) {
+        if (payload.condition) {
+          setLiveCondition(payload.condition);
+          setLastTelemetryTime(payload.condition.timestamp);
+        }
+        if (payload.online !== undefined) {
+          setIsHardwareOnline(payload.online);
+        }
+      }
+    });
+
+    const pollId = setInterval(loadLiveTelemetry, 3000);
+
+    return () => {
+      isMounted = false;
+      ws.close();
+      clearInterval(pollId);
+    };
   }, []);
 
-  async function runPrediction() {
-    setState('loading');
-    setResult(null);
+  // Validation & Analysis for Simulation Mode
+  async function handleRunSimulation() {
+    setSimError(null);
 
-    // STEP 1: Collecting sensor readings (~800ms)
-    setActiveStep(1);
-    await new Promise(r => setTimeout(r, 800));
+    // Validation
+    const t = parseFloat(simTemp.trim());
+    const r = parseFloat(simRpm.trim());
+    const c = parseFloat(simCurrent.trim());
+    const v = parseFloat(simVibration.trim());
 
-    // STEP 2: Normalizing input features (~800ms)
-    setActiveStep(2);
-    await new Promise(r => setTimeout(r, 800));
+    if (isNaN(t) || simTemp.trim() === '') {
+      setSimError('Please enter a valid numeric value for Temperature (°C).');
+      return;
+    }
+    if (isNaN(r) || simRpm.trim() === '' || r < 0) {
+      setSimError('Please enter a valid non-negative number for RPM.');
+      return;
+    }
+    if (isNaN(c) || simCurrent.trim() === '' || c < 0) {
+      setSimError('Please enter a valid non-negative number for Current (A).');
+      return;
+    }
+    if (isNaN(v) || simVibration.trim() === '' || v < 0) {
+      setSimError('Please enter a valid non-negative number for Vibration (g).');
+      return;
+    }
 
-    // STEP 3: Running ML inference engine
-    setActiveStep(3);
-    const startStep3 = Date.now();
-    let apiPrediction: PredictionData | null = null;
+    setIsSimulating(true);
 
     try {
-      const payload = {
-        rpm: motorRunning ? (demoMode === 'critical' ? 920.0 : demoMode === 'warning' ? 1380.0 : 1505.0) : 0.0,
-        temperature: demoMode === 'critical' ? 58.0 : demoMode === 'warning' ? 42.5 : 32.0,
-        humidity: 59.0,
-        current: demoMode === 'critical' ? 1.60 : demoMode === 'warning' ? 0.98 : 0.72,
-        vibration: demoMode === 'critical' ? 0.65 : demoMode === 'warning' ? 0.28 : 0.10,
-      };
-
-      const data: PredictionResponse = await fetchPrediction(payload);
-      const isFault = data.status === 'FAULT';
-      const isWarning = data.status === 'WARNING';
-
-      apiPrediction = {
-        health: data.health_score,
-        failureProb: isFault ? 90 : isWarning ? 35 : 5,
-        prediction: data.status === 'NORMAL' ? 'NORMAL OPERATION' : data.status === 'WARNING' ? 'WARNING DETECTED' : 'FAULT CONDITION',
-        risk: isFault ? 'HIGH' : isWarning ? 'MEDIUM' : 'LOW',
-        recommendation: data.prediction,
-        color: isFault ? 'var(--status-critical)' : isWarning ? 'var(--status-warning)' : 'var(--status-online)',
-        bgColor: isFault ? 'rgba(240,64,64,0.06)' : isWarning ? 'rgba(245,158,11,0.06)' : 'rgba(34,208,110,0.06)',
-        borderColor: isFault ? 'rgba(240,64,64,0.2)' : isWarning ? 'rgba(245,158,11,0.2)' : 'rgba(34,208,110,0.2)',
-        factors: data.contributing_factors,
-        isLiveApi: true,
-      };
-    } catch {
-      // Offline fallback
+      // Calls the EXACT same condition-analysis service on the backend
+      const result = await analyzeMotorCondition({
+        motor_id: 'M001-SIMULATED',
+        temperature: t,
+        rpm: r,
+        current: c,
+        vibration: v,
+      });
+      setSimResult(result);
+    } catch (err: any) {
+      setSimError(`Simulation Analysis Error: ${err.message}`);
+    } finally {
+      setIsSimulating(false);
     }
-
-    const elapsed = Date.now() - startStep3;
-    if (elapsed < 900) {
-      await new Promise(r => setTimeout(r, 900 - elapsed));
-    }
-
-    // Step 4: All steps complete
-    setActiveStep(4);
-    await new Promise(r => setTimeout(r, 400));
-
-    // Show result
-    setResult(apiPrediction || PRED_FALLBACKS[demoMode]);
-    setState('result');
   }
 
-  function clearResult() {
-    setState('idle');
-    setActiveStep(0);
-    setResult(null);
-  }
+  const activeDisplay = operatingMode === 'live' ? liveCondition : simResult;
+  const isCurrentlyProcessing = operatingMode === 'simulation' && isSimulating;
 
-  const currentReading = {
-    rpm: motorRunning ? (demoMode === 'critical' ? '920' : demoMode === 'warning' ? '1,380' : '1,505') : '0',
-    temp: demoMode === 'critical' ? '58.0' : demoMode === 'warning' ? '42.5' : '32.0',
-    hum: '59',
-    curr: demoMode === 'critical' ? '1.60' : demoMode === 'warning' ? '0.98' : '0.72',
-    vib: demoMode === 'critical' ? '0.65' : demoMode === 'warning' ? '0.28' : '0.10',
+  const getConditionColor = (cond?: string) => {
+    switch (cond) {
+      case 'NORMAL':
+        return '#22d06e';
+      case 'MEDIUM':
+        return '#f59e0b';
+      case 'HIGH':
+        return '#ef4444';
+      default:
+        return 'var(--text-muted)';
+    }
   };
 
-  const sensorSnapshot = [
-    { label: 'RPM',         value: currentReading.rpm,  unit: 'RPM' },
-    { label: 'Temperature', value: currentReading.temp, unit: '°C'  },
-    { label: 'Humidity',    value: currentReading.hum,  unit: '%'   },
-    { label: 'Current',     value: currentReading.curr, unit: 'A'   },
-    { label: 'Vibration',   value: currentReading.vib,  unit: 'g'   },
-  ];
+  const getConditionBg = (cond?: string) => {
+    switch (cond) {
+      case 'NORMAL':
+        return 'rgba(34,208,110,0.08)';
+      case 'MEDIUM':
+        return 'rgba(245,158,11,0.08)';
+      case 'HIGH':
+        return 'rgba(239,68,68,0.08)';
+      default:
+        return 'rgba(100,116,139,0.08)';
+    }
+  };
 
   return (
-    <div className="p-6 w-full space-y-5">
-      <div className="flex items-start justify-between flex-wrap gap-3">
+    <div className="p-6 w-full space-y-6">
+      {/* Operating Mode Bar */}
+      <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
         <div>
-          <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>AI Predictive Maintenance</h2>
-          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Machine learning model analyzes real-time sensor telemetry from MOTOR-01
-          </p>
-        </div>
-        {/* Demo scenario selector */}
-        <div className="flex items-center gap-2 text-[10px]">
-          <span style={{ color: 'var(--text-muted)' }}>Telemetry scenario:</span>
-          {(['normal', 'warning', 'critical'] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => setDemoMode(m)}
-              className="px-2.5 py-1 rounded font-semibold uppercase tracking-wider transition-fast cursor-pointer"
-              style={
-                demoMode === m
-                  ? {
-                      background: m === 'normal' ? 'rgba(34,208,110,0.2)' : m === 'warning' ? 'rgba(245,158,11,0.2)' : 'rgba(240,64,64,0.2)',
-                      color: m === 'normal' ? 'var(--status-online)' : m === 'warning' ? 'var(--status-warning)' : 'var(--status-critical)',
-                      border: `1px solid ${m === 'normal' ? 'var(--status-online)' : m === 'warning' ? 'var(--status-warning)' : 'var(--status-critical)'}`,
-                    }
-                  : {
-                      background: 'var(--bg-card)',
-                      color: 'var(--text-muted)',
-                      border: '1px solid var(--border-dim)',
-                    }
-              }
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Sensor snapshot */}
-      <div
-        className="rounded-lg p-4"
-        style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
-      >
-        <div className="text-[10px] uppercase tracking-widest font-semibold mb-3" style={{ color: 'var(--text-muted)' }}>
-          Real-Time Sensor Telemetry Snapshot (5 Channels)
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-          {sensorSnapshot.map(s => (
-            <div key={s.label} className="text-center p-2.5 rounded" style={{ background: 'var(--bg-card2)' }}>
-              <div className="text-[9px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
-              <div className="font-mono-data text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {s.value}
-              </div>
-              <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{s.unit}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Idle state */}
-      {state === 'idle' && (
-        <div
-          className="rounded-lg p-10 flex flex-col items-center justify-center text-center space-y-4"
-          style={{ background: 'var(--bg-card)', border: '1px dashed var(--border-mid)' }}
-        >
-          <div style={{ fontSize: 40 }}>🔮</div>
-          <div>
-            <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-              Prediction has not been run for this cycle.
-            </p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-              Click below to execute multi-sensor fusion and ML health inference.
-            </p>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">
+            OPERATING MODE SELECTOR
           </div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-bold text-white">Motor Condition & Failure Risk</h2>
+            {operatingMode === 'live' ? (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-950/80 text-emerald-300 border border-emerald-700">
+                MODE: LIVE HARDWARE | Source: ESP32
+              </span>
+            ) : (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-950/80 text-purple-300 border border-purple-700">
+                MODE: SIMULATION | Source: Manual Input
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Mode Toggle Buttons */}
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950 border border-slate-800 self-stretch sm:self-auto">
           <button
-            onClick={runPrediction}
-            className="flex items-center gap-2 px-6 py-2.5 rounded font-semibold text-sm transition-fast cursor-pointer"
-            style={{
-              background: 'rgba(43,127,255,0.12)',
-              border: '1px solid rgba(43,127,255,0.3)',
-              color: 'var(--accent-blue)',
-            }}
+            onClick={() => setOperatingMode('live')}
+            className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              operatingMode === 'live'
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
           >
-            <span>🔮</span>
-            PREDICT MACHINE HEALTH
+            <span className={`w-2 h-2 rounded-full ${isHardwareOnline ? 'bg-white animate-pulse' : 'bg-slate-400'}`} />
+            [ LIVE HARDWARE ]
+          </button>
+          <button
+            onClick={() => {
+              setOperatingMode('simulation');
+              if (!simResult) handleRunSimulation();
+            }}
+            className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              operatingMode === 'simulation'
+                ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>⚙️</span>
+            [ SIMULATION ]
+          </button>
+        </div>
+      </div>
+
+      {/* Mode Specific Context Notice */}
+      {operatingMode === 'live' ? (
+        <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs">
+          <div className="flex items-center gap-2 text-slate-300">
+            <span className={`w-2 h-2 rounded-full ${isHardwareOnline ? 'bg-emerald-400' : 'bg-red-400'}`} />
+            <span>ESP32 Hardware: <b>{isHardwareOnline ? 'CONNECTED & STREAMING' : 'OFFLINE (Awaiting Telemetry)'}</b></span>
+            {lastTelemetryTime && (
+              <span className="text-slate-500 ml-2">Last Update: {new Date(lastTelemetryTime).toLocaleTimeString()}</span>
+            )}
+          </div>
+          <span className="font-mono text-[11px] text-slate-400">Endpoint: POST /api/motor/data</span>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between p-3.5 rounded-xl bg-purple-950/30 border border-purple-800/40 text-xs text-purple-200">
+          <div className="flex items-center gap-2">
+            <span>🛡️</span>
+            <span><b>Simulation Mode Isolated:</b> Manual inputs will NOT alter the physical motor or overwrite real ESP32 telemetry.</span>
+          </div>
+          <span className="font-bold text-purple-400 text-[11px]">SIMULATION RESULT</span>
+        </div>
+      )}
+
+      {/* 3 Pipeline Stages */}
+      <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
+          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+          Pipeline Stages:
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full md:w-auto flex-1 max-w-3xl">
+          <StageBadge title="1. Sensor Data Analysis" status={isCurrentlyProcessing ? '⟳ Processing...' : '✓ Complete'} isComplete={!isCurrentlyProcessing} />
+          <StageBadge title="2. Motor Condition Analysis" status={isCurrentlyProcessing ? '⟳ Processing...' : '✓ Complete'} isComplete={!isCurrentlyProcessing} />
+          <StageBadge title="3. Failure Risk Analysis" status={isCurrentlyProcessing ? '⟳ Processing...' : '✓ Complete'} isComplete={!isCurrentlyProcessing} />
+        </div>
+      </div>
+
+      {/* Simulation Input Panel (Visible ONLY in Simulation Mode) */}
+      {operatingMode === 'simulation' && (
+        <div className="p-5 rounded-2xl bg-slate-900 border border-purple-800/50 space-y-4 shadow-xl">
+          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                <span>🎛️</span> SIMULATION MODE INPUT PANEL
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Manually enter the four sensor parameters to evaluate with the reusable condition-analysis engine.
+              </p>
+            </div>
+
+            {/* Presets */}
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => { setSimTemp('32.0'); setSimRpm('1500'); setSimCurrent('0.50'); setSimVibration('1000'); }}
+                className="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 rounded text-emerald-300 font-semibold border border-slate-700 transition"
+              >
+                Test 1 (Normal)
+              </button>
+              <button
+                onClick={() => { setSimTemp('37.0'); setSimRpm('800'); setSimCurrent('1.20'); setSimVibration('2500'); }}
+                className="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 rounded text-amber-300 font-semibold border border-slate-700 transition"
+              >
+                Test 2 (Medium)
+              </button>
+              <button
+                onClick={() => { setSimTemp('42.0'); setSimRpm('300'); setSimCurrent('1.70'); setSimVibration('3500'); }}
+                className="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 rounded text-red-300 font-semibold border border-slate-700 transition"
+              >
+                Test 3 (High)
+              </button>
+              <button
+                onClick={() => { setSimTemp('32.9'); setSimRpm('1340.7'); setSimCurrent('0.00'); setSimVibration('0.035'); }}
+                className="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 rounded text-cyan-300 font-semibold border border-slate-700 transition"
+              >
+                Test 4 (Baseline)
+              </button>
+              <button
+                onClick={() => { setSimTemp('36.0'); setSimRpm('1400'); setSimCurrent('0.80'); setSimVibration('1000'); }}
+                className="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 rounded text-purple-300 font-semibold border border-slate-700 transition"
+              >
+                Test 5 (Temp Med)
+              </button>
+            </div>
+          </div>
+
+          {/* Validation Error message */}
+          {simError && (
+            <div className="p-3 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-xs flex items-center gap-2">
+              <span>⚠️</span>
+              <span>{simError}</span>
+            </div>
+          )}
+
+          {/* Inputs Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div className="space-y-1">
+              <label className="text-slate-300 font-medium flex justify-between">
+                <span>Temperature (°C)</span>
+                <span className="text-slate-500 text-[10px]">30–45°C</span>
+              </label>
+              <input
+                type="text"
+                value={simTemp}
+                onChange={(e) => setSimTemp(e.target.value)}
+                placeholder="e.g. 32.0"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 font-mono text-white focus:border-purple-500 outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-300 font-medium flex justify-between">
+                <span>RPM (Speed)</span>
+                <span className="text-slate-500 text-[10px]">&gt;1000 norm</span>
+              </label>
+              <input
+                type="text"
+                value={simRpm}
+                onChange={(e) => setSimRpm(e.target.value)}
+                placeholder="e.g. 1400"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 font-mono text-white focus:border-purple-500 outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-300 font-medium flex justify-between">
+                <span>Current (A)</span>
+                <span className="text-slate-500 text-[10px]">&lt;1.0A norm</span>
+              </label>
+              <input
+                type="text"
+                value={simCurrent}
+                onChange={(e) => setSimCurrent(e.target.value)}
+                placeholder="e.g. 0.50"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 font-mono text-white focus:border-purple-500 outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-300 font-medium flex justify-between">
+                <span>Vibration (g)</span>
+                <span className="text-slate-500 text-[10px]">≤2000g norm</span>
+              </label>
+              <input
+                type="text"
+                value={simVibration}
+                onChange={(e) => setSimVibration(e.target.value)}
+                placeholder="e.g. 1000"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 font-mono text-white focus:border-purple-500 outline-none"
+              />
+            </div>
+          </div>
+
+          <button
+            onClick={handleRunSimulation}
+            disabled={isSimulating}
+            className="w-full py-3 bg-purple-600 hover:bg-purple-500 font-bold text-xs rounded-xl text-white shadow-lg transition active:scale-[0.99] disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            <span>{isSimulating ? '⟳ Calculating Analysis...' : '▶ RUN CONDITION ANALYSIS (ANALYZE)'}</span>
           </button>
         </div>
       )}
 
-      {/* Loading sequence */}
-      {state === 'loading' && (
-        <div
-          className="rounded-lg p-10 flex flex-col items-center justify-center text-center space-y-5"
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
-        >
-          <div className="spin" style={{ width: 36, height: 36 }}>
-            <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-              <circle cx="18" cy="18" r="15" stroke="var(--border-mid)" strokeWidth="3" />
-              <path d="M18 3a15 15 0 0 1 15 15" stroke="var(--accent-blue)" strokeWidth="3" strokeLinecap="round" />
-            </svg>
-          </div>
+      {/* Main Condition & Risk Results Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Left: Overall Condition & Score Card */}
+        <div className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between shadow-xl">
           <div>
-            <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Analyzing machine telemetry...</p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Connecting to FastAPI ML inference engine at http://127.0.0.1:8000/predict...</p>
-          </div>
-          <div className="space-y-3 pt-2 text-left w-full max-w-xs mx-auto">
-            <LoadingStep
-              label="Collecting sensor readings"
-              status={activeStep > 1 ? 'completed' : activeStep === 1 ? 'active' : 'pending'}
-            />
-            <LoadingStep
-              label="Normalizing input features"
-              status={activeStep > 2 ? 'completed' : activeStep === 2 ? 'active' : 'pending'}
-            />
-            <LoadingStep
-              label="Running ML inference engine"
-              status={activeStep > 3 ? 'completed' : activeStep === 3 ? 'active' : 'pending'}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Result Card */}
-      {state === 'result' && result && (
-        <div className="space-y-4">
-          <div
-            className="rounded-lg p-5"
-            style={{ background: result.bgColor, border: `1px solid ${result.borderColor}` }}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-              <div>
-                <div className="text-[10px] uppercase tracking-widest mb-1 flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
-                  <span>Prediction Result</span>
-                  {result.isLiveApi && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'rgba(34,208,110,0.15)', color: 'var(--status-online)' }}>
-                      LIVE API CONNECTED
-                    </span>
-                  )}
-                </div>
-                <div className="text-xl font-bold font-mono-data" style={{ color: result.color }}>
-                  {result.prediction}
-                </div>
-              </div>
-              <div
-                className="px-3 py-1.5 rounded text-xs font-bold uppercase tracking-widest"
-                style={{ background: result.borderColor, color: result.color, border: `1px solid ${result.borderColor}` }}
-              >
-                Risk: {result.risk}
-              </div>
+            <div className="flex justify-between items-center mb-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-cyan-400">
+                OVERALL MOTOR CONDITION
+              </span>
+              <span className="text-[10px] font-mono text-slate-400 px-2 py-0.5 rounded bg-slate-950">
+                {operatingMode === 'live' ? 'LIVE ESP32' : 'SIMULATED'}
+              </span>
             </div>
 
-            {/* Metrics */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-              <MetricGauge label="Machine Health Score" value={result.health} unit="%" color={result.color} />
-              <MetricGauge label="Failure Probability" value={result.failureProb} unit="%" color={result.color} invert />
-            </div>
-
-            {/* Recommendation */}
             <div
-              className="rounded px-4 py-3 mb-3"
-              style={{ background: 'rgba(0,0,0,0.2)', border: `1px solid ${result.borderColor}` }}
+              className="p-5 rounded-xl border text-center my-3 transition"
+              style={{
+                background: getConditionBg(activeDisplay?.overall_condition),
+                borderColor: `${getConditionColor(activeDisplay?.overall_condition)}44`,
+              }}
             >
-              <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Diagnostic Summary & Recommendation</div>
-              <p className="text-sm" style={{ color: 'var(--text-primary)' }}>{result.recommendation}</p>
+              <div
+                className="text-3xl font-extrabold tracking-wider"
+                style={{ color: getConditionColor(activeDisplay?.overall_condition) }}
+              >
+                {activeDisplay?.overall_condition || 'NORMAL'}
+              </div>
+              <div className="text-xs text-slate-300 mt-1.5 font-medium">
+                {activeDisplay?.message || 'Motor operating normally'}
+              </div>
             </div>
 
-            {/* Contributing factors */}
-            {result.factors && result.factors.length > 0 && (
-              <div
-                className="rounded px-4 py-3"
-                style={{ background: 'rgba(0,0,0,0.15)', border: '1px solid var(--border-dim)' }}
-              >
-                <div className="text-[10px] uppercase tracking-widest mb-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
-                  Contributing Sensor Factors
-                </div>
-                <ul className="space-y-1">
-                  {result.factors.map((f, i) => (
-                    <li key={i} className="text-xs flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: result.color }} />
-                      {f}
-                    </li>
-                  ))}
-                </ul>
+            {/* Score & Risk Indicators */}
+            <div className="space-y-3 mt-4 text-xs">
+              <div className="flex justify-between items-center py-2 border-b border-slate-800">
+                <span className="text-slate-400 font-medium">Condition Score:</span>
+                <span className="font-mono text-base font-bold text-white">
+                  {activeDisplay?.condition_score ?? 0} / {activeDisplay?.maximum_score ?? 8}
+                </span>
               </div>
-            )}
+              <div className="flex justify-between items-center py-2 border-b border-slate-800">
+                <span className="text-slate-400 font-medium">Failure Risk:</span>
+                <span
+                  className="font-bold px-2.5 py-0.5 rounded text-xs uppercase"
+                  style={{
+                    color: getConditionColor(activeDisplay?.failure_risk),
+                    background: getConditionBg(activeDisplay?.failure_risk),
+                    border: `1px solid ${getConditionColor(activeDisplay?.failure_risk)}44`,
+                  }}
+                >
+                  {activeDisplay?.failure_risk || 'LOW'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-2">
+                <span className="text-slate-400 font-medium">Assessment Method:</span>
+                <span className="font-mono text-[11px] text-cyan-400 font-semibold">
+                  RULE-BASED FAILURE RISK
+                </span>
+              </div>
+            </div>
           </div>
 
-          {/* Action buttons */}
-          <div className="flex items-center gap-3">
-            <button
-              onClick={runPrediction}
-              className="flex items-center gap-2 px-5 py-2 rounded font-semibold text-xs transition-fast cursor-pointer"
-              style={{ background: 'rgba(43,127,255,0.1)', border: '1px solid rgba(43,127,255,0.25)', color: 'var(--accent-blue)' }}
-            >
-              ⟳ Predict Again
-            </button>
-            <button
-              onClick={clearResult}
-              className="px-5 py-2 rounded text-xs transition-fast cursor-pointer"
-              style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)', color: 'var(--text-muted)' }}
-            >
-              Clear Result
-            </button>
+          <div className="mt-4 pt-3 border-t border-slate-800/80 text-[10px] text-slate-500">
+            * Evaluated using the unified condition engine with zero artificial percentage claims.
           </div>
         </div>
-      )}
 
-      {/* Model info card */}
-      <div
-        className="rounded-lg p-4 text-xs space-y-1"
-        style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)', color: 'var(--text-muted)' }}
-      >
-        <div className="font-semibold mb-2 uppercase tracking-widest text-[10px]">Active Model Provenance & Live Microservice</div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-          <div><span>Algorithm:</span> <span style={{ color: 'var(--text-primary)' }}>{modelInfo?.model_type || 'Random Forest Classifier'}</span></div>
-          <div><span>Test Accuracy:</span> <span style={{ color: 'var(--text-primary)' }}>{modelInfo ? `${(modelInfo.test_accuracy * 100).toFixed(1)}%` : '100.0%'}</span></div>
-          <div><span>Sensor Channels:</span> <span style={{ color: 'var(--text-primary)' }}>RPM, Temp, Humidity, Current, Vibration</span></div>
+        {/* Center & Right: 4 Physical Parameter Classification Cards */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="flex justify-between items-center">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+              PARAMETER EVALUATION BREAKDOWN
+            </span>
+            <span className="text-[11px] text-slate-500">
+              Priority: HIGH &gt; MEDIUM &gt; NORMAL
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {/* Temperature */}
+            <ParameterCard
+              title="Temperature"
+              value={activeDisplay?.temperature?.value ?? (operatingMode === 'live' ? 0 : parseFloat(simTemp) || 0)}
+              unit="°C"
+              condition={activeDisplay?.temperature?.condition ?? 'NORMAL'}
+              score={activeDisplay?.temperature?.score ?? 0}
+              rule="30–35°C Norm | 35–40°C Med | 40–45°C High"
+              color={getConditionColor(activeDisplay?.temperature?.condition)}
+            />
+
+            {/* RPM */}
+            <ParameterCard
+              title="RPM (Shaft Speed)"
+              value={activeDisplay?.rpm?.value ?? (operatingMode === 'live' ? 0 : parseFloat(simRpm) || 0)}
+              unit="RPM"
+              condition={activeDisplay?.rpm?.condition ?? 'NORMAL'}
+              score={activeDisplay?.rpm?.score ?? 0}
+              rule="&gt;1000 Norm | 500–1000 Med | &lt;500 High"
+              color={getConditionColor(activeDisplay?.rpm?.condition)}
+            />
+
+            {/* Current */}
+            <ParameterCard
+              title="Current Draw"
+              value={activeDisplay?.current?.value ?? (operatingMode === 'live' ? 0 : parseFloat(simCurrent) || 0)}
+              unit="A"
+              condition={activeDisplay?.current?.condition ?? 'NORMAL'}
+              score={activeDisplay?.current?.score ?? 0}
+              rule="&lt;1.0A Norm | 1.0–1.5A Med | ≥1.5A High"
+              color={getConditionColor(activeDisplay?.current?.condition)}
+            />
+
+            {/* Vibration */}
+            <ParameterCard
+              title="Vibration"
+              value={activeDisplay?.vibration?.value ?? (operatingMode === 'live' ? 0 : parseFloat(simVibration) || 0)}
+              unit="g"
+              condition={activeDisplay?.vibration?.condition ?? 'NORMAL'}
+              score={activeDisplay?.vibration?.score ?? 0}
+              rule="≤2000g Norm | 2000–3000g Med | &gt;3000g High"
+              color={getConditionColor(activeDisplay?.vibration?.condition)}
+            />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function LoadingStep({
-  label,
-  status,
-}: {
-  label: string;
-  status: 'pending' | 'active' | 'completed';
-}) {
+function StageBadge({ title, status, isComplete }: { title: string; status: string; isComplete: boolean }) {
   return (
-    <div
-      className="flex items-center gap-3 text-xs transition-colors"
-      style={{
-        color:
-          status === 'completed'
-            ? 'var(--status-online)'
-            : status === 'active'
-            ? 'var(--text-primary)'
-            : 'var(--text-muted)',
-      }}
-    >
-      {status === 'completed' ? (
-        <div
-          className="w-4 h-4 rounded-full flex items-center justify-center shrink-0"
-          style={{ background: 'rgba(34,208,110,0.15)', color: 'var(--status-online)' }}
-        >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        </div>
-      ) : status === 'active' ? (
-        <div
-          className="w-4 h-4 rounded-full border-2 spin shrink-0"
-          style={{ borderColor: 'var(--accent-blue)', borderTopColor: 'transparent' }}
-        />
-      ) : (
-        <div
-          className="w-4 h-4 rounded-full border shrink-0 flex items-center justify-center"
-          style={{ borderColor: 'var(--border-mid)', opacity: 0.5 }}
-        >
-          <div className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--text-muted)' }} />
-        </div>
-      )}
-      <span className={status === 'active' ? 'font-medium' : ''}>{label}</span>
+    <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800 flex items-center justify-between">
+      <span className="text-[11px] font-medium text-slate-300">{title}</span>
+      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isComplete ? 'text-emerald-400 bg-emerald-950/60' : 'text-amber-400 bg-amber-950/60'}`}>
+        {status}
+      </span>
     </div>
   );
 }
 
-function MetricGauge({
-  label, value, unit, color, invert,
+function ParameterCard({
+  title,
+  value,
+  unit,
+  condition,
+  score,
+  rule,
+  color,
 }: {
-  label: string; value: number; unit: string; color: string; invert?: boolean;
+  title: string;
+  value: number;
+  unit: string;
+  condition: string;
+  score: number;
+  rule: string;
+  color: string;
 }) {
-  const pct = invert ? value : value;
   return (
-    <div
-      className="rounded-lg px-4 py-3"
-      style={{ background: 'rgba(0,0,0,0.15)' }}
-    >
-      <div className="text-[10px] uppercase tracking-widest mb-2" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="flex items-end gap-1 mb-2">
-        <span className="font-mono-data text-3xl font-bold" style={{ color }}>{value}</span>
-        <span className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>{unit}</span>
+    <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between">
+      <div className="flex justify-between items-center">
+        <span className="text-xs font-semibold text-slate-400">{title}</span>
+        <span
+          className="font-bold text-[10px] px-2 py-0.5 rounded uppercase tracking-wider"
+          style={{ color: color, background: `${color}18`, border: `1px solid ${color}33` }}
+        >
+          {condition}
+        </span>
       </div>
-      <div className="h-1.5 rounded-full" style={{ background: 'var(--border-mid)' }}>
-        <div
-          className="h-full rounded-full transition-all"
-          style={{ width: `${pct}%`, background: color }}
-        />
+
+      <div className="my-2">
+        <span className="font-mono text-2xl font-bold text-white">
+          {typeof value === 'number' ? value.toFixed(unit === '°C' ? 1 : unit === 'RPM' ? 1 : 2) : value}
+        </span>
+        <span className="ml-1 text-xs text-slate-400">{unit}</span>
+      </div>
+
+      <div className="flex justify-between items-center text-[10px] text-slate-500 pt-2 border-t border-slate-800/80">
+        <span>Score: <b className="text-slate-300">{score} / 2</b></span>
+        <span className="truncate max-w-[150px]">{rule}</span>
       </div>
     </div>
   );

@@ -9,29 +9,33 @@ DEFAULT_URL = "http://localhost:8000/api/motor/data"
 
 
 def generate_sample_reading(motor_id: str = "M001", status: str = "ON", iteration: int = 0) -> dict:
-    """Generates a realistic telemetry payload mimicking the real ESP32 sensors."""
-    # Temperature: DHT22 range ~40-45 C under load
-    temp = 42.0 + (iteration % 5) * 0.3
-    humidity = 62.0 - (iteration % 4) * 0.2
+    """
+    Generates a development test telemetry payload matching the real ESP32 JSON schema.
+    NOTE: For development/testing only; does not replace real ESP32 hardware streaming.
+    """
+    temp = 33.9 + (iteration % 5) * 0.2
+    humidity = 69.0 - (iteration % 4) * 0.1
+    current = 0.08 if status == "ON" else 0.0
+    acs_adc = 530.0 if status == "ON" else 0.0
+    ir_pulses = 5516 + iteration * 25
+    rpm = 2945.7 if status == "ON" else 0.0
+    motor_pwm = 255 if status == "ON" else 0
     
-    # ACS712: 5A version (~1850 ADC, ~2.40A when ON, 0A when OFF)
-    current = 2.40 if status == "ON" else 0.0
-    acs_adc = 1850.0 if status == "ON" else 0.0
-    
-    # MPU6050: Acceleration in g
-    mpu_x = 0.259
-    mpu_y = -0.965
-    mpu_z = -0.062
-    total_accel = 1.021
-    vibration = abs(total_accel - 1.0)  # 0.021
-    vibration_level = "LOW"
+    mpu_x = 0.01
+    mpu_y = 0.09
+    mpu_z = -0.46
+    total_accel = 0.47
+    vibration = 0.53
+    vibration_level = "HIGH"
     
     return {
         "motor_id": motor_id,
         "status": status,
         "temperature": round(temp, 2),
         "humidity": round(humidity, 2),
-        "ir": 1 if status == "ON" else 0,
+        "ir": 0 if status == "ON" else 1,
+        "ir_pulses": ir_pulses,
+        "rpm": round(rpm, 1),
         "acs_adc": acs_adc,
         "current": round(current, 2),
         "mpu_x": mpu_x,
@@ -40,6 +44,7 @@ def generate_sample_reading(motor_id: str = "M001", status: str = "ON", iteratio
         "total_acceleration": round(total_accel, 3),
         "vibration": round(vibration, 3),
         "vibration_level": vibration_level,
+        "motor_pwm": motor_pwm,
         "voltage": None,
         "esp32_ip": "192.168.1.150"
     }

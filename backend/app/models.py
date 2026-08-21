@@ -23,6 +23,8 @@ class MotorReading(Base):
     temperature = Column(Float, nullable=False)   # DHT22 (°C)
     humidity = Column(Float, nullable=False)      # DHT22 (%)
     ir = Column(Integer, nullable=False)          # IR Sensor (0 or 1)
+    ir_pulses = Column(Integer, nullable=True, default=0)  # Cumulative IR pulse count
+    rpm = Column(Float, nullable=True, default=0.0)        # Motor RPM
     
     # Current Sensor (ACS712)
     acs_adc = Column(Float, nullable=False)       # Raw ADC value
@@ -36,7 +38,8 @@ class MotorReading(Base):
     vibration = Column(Float, nullable=False)     # abs(total_accel - 1.0)
     vibration_level = Column(String(16), nullable=False)  # "LOW", "MEDIUM", "HIGH"
     
-    # Optional / Future Expandable fields
+    # Motor PWM & Optional / Future Expandable fields
+    motor_pwm = Column(Integer, nullable=True, default=0)  # Motor PWM Duty (0-255)
     voltage = Column(Float, nullable=True)        # Voltage (Nullable - not faked)
     esp32_ip = Column(String(64), nullable=True)  # ESP32 local IP address
 

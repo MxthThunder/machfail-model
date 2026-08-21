@@ -21,6 +21,7 @@ from app.schemas import (
     CommandAckResponse,
 )
 from app.services.connection_manager import ws_manager
+from app.services.condition_service import condition_service
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,8 @@ class MotorService:
             temperature=data.temperature,
             humidity=data.humidity,
             ir=data.ir,
+            ir_pulses=data.ir_pulses if data.ir_pulses is not None else 0,
+            rpm=data.rpm if data.rpm is not None else 0.0,
             acs_adc=data.acs_adc,
             current=data.current,
             mpu_x=data.mpu_x,
@@ -85,6 +88,7 @@ class MotorService:
             total_acceleration=data.total_acceleration,
             vibration=data.vibration,
             vibration_level=data.vibration_level.upper(),
+            motor_pwm=data.motor_pwm if data.motor_pwm is not None else 0,
             voltage=data.voltage,
             esp32_ip=data.esp32_ip,
         )
@@ -99,6 +103,8 @@ class MotorService:
             "temperature": data.temperature,
             "humidity": data.humidity,
             "ir": data.ir,
+            "ir_pulses": data.ir_pulses if data.ir_pulses is not None else 0,
+            "rpm": data.rpm if data.rpm is not None else 0.0,
             "acs_adc": data.acs_adc,
             "current": data.current,
             "mpu_x": data.mpu_x,
@@ -107,6 +113,7 @@ class MotorService:
             "total_acceleration": data.total_acceleration,
             "vibration": data.vibration,
             "vibration_level": data.vibration_level.upper(),
+            "motor_pwm": data.motor_pwm if data.motor_pwm is not None else 0,
             "voltage": data.voltage,
             "esp32_ip": data.esp32_ip,
             "received_at": timestamp_str,
@@ -115,13 +122,24 @@ class MotorService:
 
         logger.info(
             f"ESP32 Telemetry stored for {data.motor_id}: "
-            f"Status={data.status} Temp={data.temperature}°C Current={data.current}A Vib={data.vibration_level}"
+            f"Status={data.status} Temp={data.temperature}°C RPM={data.rpm} Current={data.current}A Vib={data.vibration_level}"
         )
 
-        # 3. Broadcast real-time update to WebSocket subscribers
+        # 3. Evaluate real-time condition analysis
+        condition_eval = condition_service.evaluate_condition(
+            motor_id=data.motor_id,
+            temperature=data.temperature,
+            rpm=data.rpm if data.rpm is not None else 0.0,
+            current=data.current,
+            vibration=data.vibration,
+            timestamp=timestamp_str
+        )
+
+        # 4. Broadcast real-time update to WebSocket subscribers
         ws_payload = {
             "type": "telemetry",
             "data": latest_dict,
+            "condition": condition_eval,
             "runtime_seconds": round(self.accumulated_runtimes.get(data.motor_id, 0.0), 2),
             "online": True
         }
@@ -151,6 +169,8 @@ class MotorService:
             "temperature": db_reading.temperature,
             "humidity": db_reading.humidity,
             "ir": db_reading.ir,
+            "ir_pulses": db_reading.ir_pulses if db_reading.ir_pulses is not None else 0,
+            "rpm": db_reading.rpm if db_reading.rpm is not None else 0.0,
             "acs_adc": db_reading.acs_adc,
             "current": db_reading.current,
             "mpu_x": db_reading.mpu_x,
@@ -159,6 +179,7 @@ class MotorService:
             "total_acceleration": db_reading.total_acceleration,
             "vibration": db_reading.vibration,
             "vibration_level": db_reading.vibration_level,
+            "motor_pwm": db_reading.motor_pwm if db_reading.motor_pwm is not None else 0,
             "voltage": db_reading.voltage,
             "esp32_ip": db_reading.esp32_ip,
             "received_at": db_reading.timestamp.isoformat() if db_reading.timestamp else utc_now().isoformat(),
@@ -231,6 +252,8 @@ class MotorService:
                 temperature=r.temperature,
                 humidity=r.humidity,
                 ir=r.ir,
+                ir_pulses=r.ir_pulses if r.ir_pulses is not None else 0,
+                rpm=r.rpm if r.rpm is not None else 0.0,
                 acs_adc=r.acs_adc,
                 current=r.current,
                 mpu_x=r.mpu_x,
@@ -239,6 +262,7 @@ class MotorService:
                 total_acceleration=r.total_acceleration,
                 vibration=r.vibration,
                 vibration_level=r.vibration_level,
+                motor_pwm=r.motor_pwm if r.motor_pwm is not None else 0,
                 voltage=r.voltage,
                 esp32_ip=r.esp32_ip,
                 timestamp=r.timestamp.isoformat() if r.timestamp else utc_now().isoformat()

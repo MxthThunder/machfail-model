@@ -1,45 +1,115 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import {
+  sendMotorControl,
+  fetchMotorStatus,
+  fetchLatestMotorTelemetry,
+  connectMotorWebSocket,
+  type MotorTelemetryData,
+  type MotorStatusData,
+} from '../services/api';
 
 export default function MotorControl({
-  motorRunning,
-  setMotorRunning,
   commandedSpeed,
   setCommandedSpeed,
 }: {
-  motorRunning: boolean;
-  setMotorRunning: (v: boolean) => void;
+  motorRunning?: boolean;
+  setMotorRunning?: (v: boolean) => void;
   commandedSpeed: number;
   setCommandedSpeed: (v: number) => void;
 }) {
   const [confirmEStop, setConfirmEStop] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const [lastAction, setLastAction] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
+  const [latestTelemetry, setLatestTelemetry] = useState<MotorTelemetryData | null>(null);
+  const [motorStatus, setMotorStatus] = useState<MotorStatusData | null>(null);
 
-  const actualRpm = motorRunning ? Math.round((commandedSpeed / 100) * 1500 + 50) : 0;
-  const actualTemp = motorRunning ? (38 + commandedSpeed * 0.08).toFixed(1) : '--';
+  // Poll real motor state & connect WebSocket
+  useEffect(() => {
+    let isMounted = true;
 
-  function handleStart() {
-    setMotorRunning(true);
-    setLastAction(`Motor started at ${new Date().toLocaleTimeString()}`);
+    async function loadData() {
+      const [telemetry, status] = await Promise.all([
+        fetchLatestMotorTelemetry('M001'),
+        fetchMotorStatus('M001'),
+      ]);
+      if (isMounted) {
+        if (telemetry) setLatestTelemetry(telemetry);
+        if (status) setMotorStatus(status);
+      }
+    }
+
+    loadData();
+
+    const ws = connectMotorWebSocket('M001', (payload) => {
+      if (isMounted && payload.data) {
+        setLatestTelemetry(payload.data);
+        if (payload.online !== undefined) {
+          setMotorStatus((prev) => (prev ? { ...prev, online: payload.online, status: payload.data.status } : null));
+        }
+      }
+    });
+
+    const pollId = setInterval(loadData, 3000);
+
+    return () => {
+      isMounted = false;
+      ws.close();
+      clearInterval(pollId);
+    };
+  }, []);
+
+  const isOnline = motorStatus?.online ?? false;
+  const actualStatus = latestTelemetry?.status || motorStatus?.status || 'OFF';
+  const isActualRunning = actualStatus.toUpperCase() === 'ON';
+
+  async function handleStart() {
+    setIsSending(true);
+    setPendingCommand('ON');
+    try {
+      await sendMotorControl('M001', 'ON');
+      setLastAction(`ON command dispatched at ${new Date().toLocaleTimeString()}. Awaiting ESP32 hardware execution.`);
+    } catch (e: any) {
+      setLastAction(`Error dispatching command: ${e.message}`);
+    } finally {
+      setIsSending(false);
+    }
   }
 
-  function handleStop() {
+  async function handleStop() {
     if (confirmStop) {
-      setMotorRunning(false);
-      setLastAction(`Motor stopped at ${new Date().toLocaleTimeString()}`);
-      setConfirmStop(false);
+      setIsSending(true);
+      setPendingCommand('OFF');
+      try {
+        await sendMotorControl('M001', 'OFF');
+        setLastAction(`OFF command dispatched at ${new Date().toLocaleTimeString()}.`);
+      } catch (e: any) {
+        setLastAction(`Error dispatching command: ${e.message}`);
+      } finally {
+        setIsSending(false);
+        setConfirmStop(false);
+      }
     } else {
       setConfirmStop(true);
       setTimeout(() => setConfirmStop(false), 4000);
     }
   }
 
-  function handleEStop() {
+  async function handleEStop() {
     if (confirmEStop) {
-      setMotorRunning(false);
+      setIsSending(true);
+      setPendingCommand('OFF');
       setCommandedSpeed(0);
-      setLastAction(`EMERGENCY STOP activated at ${new Date().toLocaleTimeString()}`);
-      setConfirmEStop(false);
+      try {
+        await sendMotorControl('M001', 'OFF');
+        setLastAction(`EMERGENCY STOP dispatched at ${new Date().toLocaleTimeString()}!`);
+      } catch (e: any) {
+        setLastAction(`Error during E-Stop: ${e.message}`);
+      } finally {
+        setIsSending(false);
+        setConfirmEStop(false);
+      }
     } else {
       setConfirmEStop(true);
       setTimeout(() => setConfirmEStop(false), 5000);
@@ -47,158 +117,162 @@ export default function MotorControl({
   }
 
   return (
-    <div className="p-6 w-full space-y-5">
-      <div>
-        <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Motor Control Panel</h2>
-        <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-          Commands are sent to the ESP32 through the connected network.
-        </p>
-      </div>
+    <div className="p-6 w-full space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Motor Control Panel</h2>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Bi-directional motor actuation: Dashboard → FastAPI Command Queue → ESP32 L298N Driver
+          </p>
+        </div>
 
-      {/* Status row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'Motor Status', value: motorRunning ? 'RUNNING' : 'STOPPED', color: motorRunning ? 'var(--status-online)' : 'var(--status-offline)' },
-          { label: 'Actual RPM', value: actualRpm.toLocaleString(), color: 'var(--accent-blue)' },
-          { label: 'Temperature', value: `${actualTemp} °C`, color: 'var(--status-warning)' },
-          { label: 'Current Draw', value: motorRunning ? `${(commandedSpeed * 0.018 + 0.4).toFixed(2)} A` : '0.00 A', color: 'var(--text-primary)' },
-        ].map(({ label, value, color }) => (
+        <div className="flex items-center gap-2">
           <div
-            key={label}
-            className="rounded-lg px-4 py-3"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider"
+            style={{
+              background: isOnline ? 'rgba(34,208,110,0.1)' : 'rgba(239,68,68,0.1)',
+              border: `1px solid ${isOnline ? 'rgba(34,208,110,0.3)' : 'rgba(239,68,68,0.3)'}`,
+              color: isOnline ? 'var(--status-online)' : 'var(--status-critical)',
+            }}
           >
-            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>{label}</div>
-            <div className="font-mono-data text-lg font-bold" style={{ color }}>{value}</div>
+            <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+            Hardware: {isOnline ? 'ONLINE (ESP32 Connected)' : 'OFFLINE'}
           </div>
-        ))}
+        </div>
       </div>
 
-      {/* Speed control */}
+      {/* Command vs Actual Status Overview Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+        <div
+          className="rounded-xl p-4 flex flex-col justify-between"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+        >
+          <div className="text-[10px] uppercase tracking-widest text-slate-400">Actual Motor State</div>
+          <div className="my-1 font-mono text-xl font-bold" style={{ color: isActualRunning ? 'var(--status-online)' : 'var(--text-muted)' }}>
+            {isActualRunning ? 'RUNNING' : 'STOPPED'}
+          </div>
+          <div className="text-[10px] text-slate-500">Reported by ESP32 Telemetry</div>
+        </div>
+
+        <div
+          className="rounded-xl p-4 flex flex-col justify-between"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+        >
+          <div className="text-[10px] uppercase tracking-widest text-slate-400">Command Requested</div>
+          <div className="my-1 font-mono text-xl font-bold text-cyan-400">
+            {pendingCommand || 'IDLE'}
+          </div>
+          <div className="text-[10px] text-slate-500">Backend Queue Status</div>
+        </div>
+
+        <div
+          className="rounded-xl p-4 flex flex-col justify-between"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+        >
+          <div className="text-[10px] uppercase tracking-widest text-slate-400">Actual RPM</div>
+          <div className="my-1 font-mono text-xl font-bold text-emerald-400">
+            {latestTelemetry ? latestTelemetry.rpm.toFixed(1) : '0.0'} RPM
+          </div>
+          <div className="text-[10px] text-slate-500">Optical Encoder Feedback</div>
+        </div>
+
+        <div
+          className="rounded-xl p-4 flex flex-col justify-between"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+        >
+          <div className="text-[10px] uppercase tracking-widest text-slate-400">Motor PWM Duty</div>
+          <div className="my-1 font-mono text-xl font-bold text-amber-400">
+            {latestTelemetry ? `${latestTelemetry.motor_pwm} / 255` : '0 / 255'}
+          </div>
+          <div className="text-[10px] text-slate-500">L298N Drive Duty Cycle</div>
+        </div>
+      </div>
+
+      {/* Speed / PWM Control Slider */}
       <div
-        className="rounded-lg p-5 space-y-4"
+        className="rounded-xl p-5 space-y-4"
         style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
       >
         <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Speed Control</span>
-          <span className="font-mono-data text-xs px-3 py-1 rounded" style={{ background: 'var(--bg-card2)', color: 'var(--accent-blue)' }}>
-            {commandedSpeed}% commanded
+          <span className="text-sm font-semibold text-slate-200">Motor Speed / PWM Command</span>
+          <span className="font-mono text-xs px-3 py-1 rounded bg-slate-900 text-cyan-400 border border-slate-800">
+            {commandedSpeed}% Command (PWM: {Math.round((commandedSpeed / 100) * 255)} / 255)
           </span>
         </div>
 
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
-            <span>0%</span>
-            <span className="font-mono-data text-base font-bold" style={{ color: 'var(--text-primary)' }}>
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>0% (0 PWM)</span>
+            <span className="font-mono text-base font-bold text-white">
               {commandedSpeed}%
             </span>
-            <span>100%</span>
+            <span>100% (255 PWM)</span>
           </div>
-          <div style={{ position: 'relative' }}>
-            <div
-              className="absolute inset-y-0 left-0 rounded-l-full pointer-events-none"
-              style={{ width: `${commandedSpeed}%`, background: 'var(--accent-blue)', opacity: 0.18, top: '50%', transform: 'translateY(-50%)', height: 6 }}
-            />
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={commandedSpeed}
-              onChange={e => setCommandedSpeed(Number(e.target.value))}
-              className="w-full"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
-          <div className="flex items-center justify-between px-3 py-2 rounded" style={{ background: 'var(--bg-card2)' }}>
-            <span style={{ color: 'var(--text-muted)' }}>Commanded Speed</span>
-            <span className="font-mono-data font-semibold" style={{ color: 'var(--text-primary)' }}>{commandedSpeed}%</span>
-          </div>
-          <div className="flex items-center justify-between px-3 py-2 rounded" style={{ background: 'var(--bg-card2)' }}>
-            <span style={{ color: 'var(--text-muted)' }}>Actual RPM</span>
-            <span className="font-mono-data font-semibold" style={{ color: 'var(--accent-blue)' }}>{actualRpm.toLocaleString()} RPM</span>
-          </div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={commandedSpeed}
+            onChange={(e) => setCommandedSpeed(Number(e.target.value))}
+            className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+          />
         </div>
       </div>
 
-      {/* Control buttons */}
-      <div
-        className="rounded-lg p-5"
-        style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
-      >
-        <div className="text-xs font-semibold mb-4 uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-          Motor Commands
-        </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Start */}
-          <button
-            disabled={motorRunning}
-            onClick={handleStart}
-            className="flex items-center gap-2 px-5 py-2.5 rounded font-semibold text-sm transition-fast"
-            style={
-              !motorRunning
-                ? { background: 'rgba(34,208,110,0.12)', border: '1px solid rgba(34,208,110,0.3)', color: 'var(--status-online)', cursor: 'pointer' }
-                : { background: 'var(--bg-card2)', border: '1px solid var(--border-dim)', color: 'var(--text-muted)', cursor: 'not-allowed', opacity: 0.5 }
-            }
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            Start
-          </button>
-
-          {/* Stop */}
-          <button
-            disabled={!motorRunning}
-            onClick={handleStop}
-            className="flex items-center gap-2 px-5 py-2.5 rounded font-semibold text-sm transition-fast"
-            style={
-              motorRunning
-                ? confirmStop
-                  ? { background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: 'var(--status-warning)', cursor: 'pointer' }
-                  : { background: 'rgba(43,127,255,0.1)', border: '1px solid rgba(43,127,255,0.25)', color: 'var(--accent-blue)', cursor: 'pointer' }
-                : { background: 'var(--bg-card2)', border: '1px solid var(--border-dim)', color: 'var(--text-muted)', cursor: 'not-allowed', opacity: 0.5 }
-            }
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
-            {confirmStop ? 'Confirm Stop' : 'Stop'}
-          </button>
-
-          {/* Emergency Stop */}
-          <button
-            onClick={handleEStop}
-            className="flex items-center gap-2 px-5 py-2.5 rounded font-bold text-sm transition-fast ml-auto"
-            style={
-              confirmEStop
-                ? { background: 'rgba(240,64,64,0.25)', border: '2px solid rgba(240,64,64,0.7)', color: '#ff6060', cursor: 'pointer', boxShadow: '0 0 16px rgba(240,64,64,0.3)' }
-                : { background: 'rgba(240,64,64,0.08)', border: '2px solid rgba(240,64,64,0.35)', color: 'var(--status-critical)', cursor: 'pointer' }
-            }
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2" fill="currentColor" opacity="0.2" stroke="currentColor" strokeWidth="2"/>
-              <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            {confirmEStop ? '⚠ CONFIRM E-STOP' : 'Emergency Stop'}
-          </button>
-        </div>
-
-        {confirmEStop && (
-          <div
-            className="mt-3 px-3 py-2 rounded text-xs"
-            style={{ background: 'rgba(240,64,64,0.06)', border: '1px solid rgba(240,64,64,0.2)', color: 'var(--status-critical)' }}
-          >
-            Click Emergency Stop again to confirm. This will immediately cut motor power.
-          </div>
-        )}
-      </div>
-
-      {/* Last action log */}
-      {lastAction && (
-        <div
-          className="px-4 py-3 rounded text-xs flex items-center gap-2"
-          style={{ background: 'var(--bg-card2)', border: '1px solid var(--border-dim)', color: 'var(--text-muted)' }}
+      {/* Actuation Control Buttons */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* START */}
+        <button
+          onClick={handleStart}
+          disabled={isSending}
+          className="flex items-center justify-center gap-2 p-4 rounded-xl font-bold text-sm text-emerald-300 bg-emerald-950/40 border border-emerald-800/80 hover:bg-emerald-900/60 active:scale-95 transition disabled:opacity-50"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          {lastAction}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+          {isSending && pendingCommand === 'ON' ? 'Sending ON...' : 'START MOTOR (ON)'}
+        </button>
+
+        {/* STOP */}
+        <button
+          onClick={handleStop}
+          disabled={isSending}
+          className={`flex items-center justify-center gap-2 p-4 rounded-xl font-bold text-sm transition active:scale-95 disabled:opacity-50 ${
+            confirmStop
+              ? 'bg-amber-600 text-white border border-amber-500 animate-pulse'
+              : 'text-amber-300 bg-amber-950/40 border border-amber-800/80 hover:bg-amber-900/60'
+          }`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <rect x="6" y="6" width="12" height="12" />
+          </svg>
+          {confirmStop ? 'CONFIRM STOP?' : isSending && pendingCommand === 'OFF' ? 'Stopping...' : 'STOP MOTOR'}
+        </button>
+
+        {/* EMERGENCY STOP */}
+        <button
+          onClick={handleEStop}
+          disabled={isSending}
+          className={`flex items-center justify-center gap-2 p-4 rounded-xl font-bold text-sm transition active:scale-95 disabled:opacity-50 ${
+            confirmEStop
+              ? 'bg-red-600 text-white border border-red-500 shadow-red-500/50 shadow-lg animate-pulse'
+              : 'text-red-300 bg-red-950/50 border border-red-800/90 hover:bg-red-900/70'
+          }`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="15" y1="9" x2="9" y2="15" />
+            <line x1="9" y1="9" x2="15" y2="15" />
+          </svg>
+          {confirmEStop ? 'CONFIRM EMERGENCY STOP!' : 'EMERGENCY STOP (E-STOP)'}
+        </button>
+      </div>
+
+      {/* Activity Log Banner */}
+      {lastAction && (
+        <div className="p-3.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs font-mono text-slate-300 flex items-center gap-2">
+          <span className="text-cyan-400">ℹ️ Log:</span> {lastAction}
         </div>
       )}
     </div>
